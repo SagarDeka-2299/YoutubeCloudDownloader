@@ -1,0 +1,7 @@
+__pycache__/
+.claude/
+.venv/
+temp/
+data/
+downloads/
+
