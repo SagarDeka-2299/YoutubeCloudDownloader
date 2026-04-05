@@ -62,6 +62,26 @@ CREATE TABLE IF NOT EXISTS queue (
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS zip_queue (
+    job_id           TEXT PRIMARY KEY,
+    ip_address       TEXT NOT NULL,
+    status           TEXT DEFAULT 'queued',
+    title            TEXT,
+    percent          REAL DEFAULT 0,
+    zip_path         TEXT DEFAULT '',
+    error_msg        TEXT,
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS transcripts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    media_id    INTEGER REFERENCES media(id) ON DELETE CASCADE,
+    language    TEXT,
+    text        TEXT,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -162,6 +182,7 @@ def query_media(
     min_duration: int | None = None,
     max_duration: int | None = None,
     tags: list[str] | None = None,
+    sub_lang: str | None = None,
     sort_by: str = "download_date",
     order: str = "desc",
     limit: int = 60,
@@ -187,6 +208,9 @@ def query_media(
         cond.append("COALESCE(duration,0)>=?"); params.append(min_duration)
     if max_duration is not None:
         cond.append("COALESCE(duration,0)<=?"); params.append(max_duration)
+    if sub_lang is not None and sub_lang.strip():
+        cond.append("EXISTS (SELECT 1 FROM transcripts t WHERE t.media_id = media.id AND t.language = ?)")
+        params.append(sub_lang.strip())
 
     fetch = (limit * 4) if tags else limit
     sql = f"SELECT * FROM media WHERE {' AND '.join(cond)} ORDER BY {sb} {od} LIMIT ? OFFSET ?"
@@ -232,6 +256,17 @@ def get_all_tags(mode: str = "audio") -> list[str]:
     return sorted(tag_set)
 
 
+def get_all_sub_langs(mode: str = "audio") -> list[str]:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT DISTINCT t.language FROM transcripts t "
+            "JOIN media m ON t.media_id = m.id "
+            "WHERE m.mode=? ORDER BY t.language ASC",
+            (mode,)
+        ).fetchall()
+    return [r[0] for r in rows if r[0]]
+
+
 def get_media_by_id(media_id: int) -> dict | None:
     with _conn() as c:
         row = c.execute("SELECT * FROM media WHERE id=?", (media_id,)).fetchone()
@@ -262,6 +297,29 @@ def update_media_path(media_id: int, new_path: str) -> None:
     with _conn() as c:
         c.execute("UPDATE media SET file_path=? WHERE id=?", (new_path, media_id))
         c.commit()
+
+
+# ── Transcripts ──────────────────────────────────────────────────────────────────
+
+def insert_transcript(media_id: int, lang: str, text: str) -> None:
+    with _conn() as c:
+        # Avoid inserting empty transcripts
+        if not text.strip():
+            return
+        c.execute(
+            "INSERT INTO transcripts (media_id, language, text) VALUES (?,?,?)",
+            (media_id, lang, text)
+        )
+        c.commit()
+
+
+def get_transcripts(media_id: int) -> list[dict]:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT language, text, created_at FROM transcripts WHERE media_id=? ORDER BY language ASC",
+            (media_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 # ── Queue ──────────────────────────────────────────────────────────────────────
@@ -317,4 +375,50 @@ def queue_list(page: int = 0, limit: int = 10) -> tuple[list[dict], int]:
 def queue_delete(job_id: str) -> None:
     with _conn() as c:
         c.execute("DELETE FROM queue WHERE job_id=?", (job_id,))
+        c.commit()
+
+
+# ── Zip Queue ──────────────────────────────────────────────────────────────────
+
+def zip_insert(job_id: str, ip_address: str, status: str = 'queued') -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT OR IGNORE INTO zip_queue (job_id, ip_address, status) VALUES (?,?,?)",
+            (job_id, ip_address, status)
+        )
+        c.commit()
+
+def zip_update(job_id: str, **kwargs: Any) -> None:
+    _allowed = {"status", "title", "percent", "zip_path", "error_msg"}
+    sets, vals = [], []
+    for k, v in kwargs.items():
+        if k in _allowed:
+            sets.append(f"{k}=?")
+            vals.append(v)
+    if not sets:
+        return
+    sets.append("updated_at=CURRENT_TIMESTAMP")
+    vals.append(job_id)
+    with _conn() as c:
+        c.execute(f"UPDATE zip_queue SET {', '.join(sets)} WHERE job_id=?", vals)
+        c.commit()
+
+def zip_get(job_id: str) -> dict | None:
+    with _conn() as c:
+        row = c.execute("SELECT * FROM zip_queue WHERE job_id=?", (job_id,)).fetchone()
+        return dict(row) if row else None
+
+def zip_list_by_ip(ip_address: str, page: int = 0, limit: int = 10) -> tuple[list[dict], int]:
+    with _conn() as c:
+        total = c.execute("SELECT COUNT(*) FROM zip_queue WHERE ip_address=?", (ip_address,)).fetchone()[0]
+        offset = page * limit
+        rows = c.execute(
+            "SELECT * FROM zip_queue WHERE ip_address=? ORDER BY created_at ASC LIMIT ? OFFSET ?",
+            (ip_address, limit, offset),
+        ).fetchall()
+        return [dict(r) for r in rows], total
+
+def zip_delete(job_id: str) -> None:
+    with _conn() as c:
+        c.execute("DELETE FROM zip_queue WHERE job_id=?", (job_id,))
         c.commit()

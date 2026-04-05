@@ -16,8 +16,11 @@ from uuid import uuid4
 
 import yt_dlp
 import db
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import HTMLResponse, FileResponse
+from starlette.background import BackgroundTask
+import tempfile
+import zipfile
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -30,8 +33,10 @@ def log(emoji: str, msg: str) -> None:
 # ── Environment config ─────────────────────────────────────────────────────────
 AUDIO_DIR = Path(os.environ.get("AUDIO_DIR", "downloads/audio"))
 VIDEO_DIR = Path(os.environ.get("VIDEO_DIR", "downloads/video"))
+ZIPS_DIR  = Path(os.environ.get("ZIP_DIR", "downloads/zips"))
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+ZIPS_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_CONCURRENT   = int(os.environ.get("MAX_CONCURRENT", "3"))
 _FFMPEG_LOCATION = shutil.which("ffmpeg")
@@ -39,11 +44,18 @@ _COOKIES_FILE    = os.environ.get("COOKIES_FILE", "")  # path to Netscape cookie
 
 log("⚙️", f"AUDIO_DIR={AUDIO_DIR.resolve()}")
 log("⚙️", f"VIDEO_DIR={VIDEO_DIR.resolve()}")
+log("⚙️", f"ZIPS_DIR={ZIPS_DIR.resolve()}")
 log("⚙️", f"MAX_CONCURRENT={MAX_CONCURRENT}")
 log("⚙️", f"ffmpeg={'found at ' + _FFMPEG_LOCATION if _FFMPEG_LOCATION else 'NOT FOUND'}")
 if _COOKIES_FILE:
     _cp = Path(_COOKIES_FILE)
-    log("🍪", f"COOKIES_FILE={_COOKIES_FILE} exists={_cp.exists()} size={_cp.stat().st_size if _cp.exists() else 0}B")
+    if _cp.exists():
+        _tmp_cookies = Path(tempfile.gettempdir()) / "ytgrab_cookies.txt"
+        shutil.copy(_cp, _tmp_cookies)
+        _COOKIES_FILE = str(_tmp_cookies)
+        log("🍪", f"COOKIES_FILE={_COOKIES_FILE} (copied) exists=True size={_tmp_cookies.stat().st_size}B")
+    else:
+        log("🍪", f"COOKIES_FILE={_cp} NOT FOUND")
 else:
     log("⚠️", "COOKIES_FILE not set — YouTube may block downloads (bot detection)")
 
@@ -185,6 +197,26 @@ class _SaveToDB(yt_dlp.postprocessor.PostProcessor):
         except Exception as exc:
             log("❌", f"[{job_short}] db.upsert_media FAILED: {exc}")
 
+        # --- Transcript Processing ---
+        subs_info = info.get("requested_subtitles")
+        if subs_info and media_id != -1:
+            for lang, sub_data in subs_info.items():
+                sub_file = sub_data.get("filepath")
+                if sub_file and Path(sub_file).exists():
+                    log("📝", f"[{job_short}] Found transcript for {lang}")
+                    try:
+                        vtt_text = Path(sub_file).read_text(encoding="utf-8")
+                        clean_text = self._strip_vtt(vtt_text)
+                        db.insert_transcript(media_id, lang, clean_text)
+                        log("📝", f"[{job_short}] Saved transcript for {lang} to DB")
+                    except Exception as e:
+                        log("❌", f"[{job_short}] Error parsing transcript {lang}: {e}")
+                    
+                    try:
+                        Path(sub_file).unlink(missing_ok=True)
+                    except:
+                        pass
+
         title   = info.get("title", "")
         track   = info.get("playlist_index") or 1
         n_total = info.get("n_entries") or 1
@@ -194,9 +226,28 @@ class _SaveToDB(yt_dlp.postprocessor.PostProcessor):
         )
         return [], info
 
+    def _strip_vtt(self, vtt_text: str) -> str:
+        lines = vtt_text.splitlines()
+        clean_lines = []
+        import re
+        for line in lines:
+            if "WEBVTT" in line or "-->" in line or "Kind: captions" in line or "Language:" in line:
+                continue
+            cleaned = line.strip()
+            if cleaned or (clean_lines and clean_lines[-1]):
+                 cleaned = re.sub(r'<[^>]+>', '', cleaned)
+                 clean_lines.append(cleaned)
+        
+        res = []
+        for line in clean_lines:
+            if not line and (not res or not res[-1]):
+                continue
+            res.append(line)
+        return "\n".join(res).strip()
+
 
 # ── yt-dlp opts ────────────────────────────────────────────────────────────────
-def _build_opts(mode: str, quality: str, output_dir: Path) -> dict:
+def _build_opts(mode: str, quality: str, output_dir: Path, subtitles: list[str] = None) -> dict:
     base: dict = {
         # Do NOT use quiet=True — we need to see errors in logs
         "quiet":        False,
@@ -222,6 +273,12 @@ def _build_opts(mode: str, quality: str, output_dir: Path) -> dict:
         base["cookiefile"] = _COOKIES_FILE
         log("🍪", f"Using cookies file: {_COOKIES_FILE}")
 
+    if subtitles:
+        base["writesubtitles"] = True
+        base["writeautomaticsub"] = True
+        base["subtitleslangs"] = subtitles
+        base["subtitlesformat"] = "vtt/best"
+
     if mode == "audio":
         return {
             **base,
@@ -244,14 +301,14 @@ def _build_opts(mode: str, quality: str, output_dir: Path) -> dict:
 
 # ── Download worker ────────────────────────────────────────────────────────────
 async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
-                   target_path: str) -> None:
+                   target_path: str, subtitles: list[str]) -> None:
     global _dl_semaphore
     loop       = asyncio.get_event_loop()
     job_short  = job.job_id[:8]
     base_dir   = AUDIO_DIR if mode == "audio" else VIDEO_DIR
     output_dir = (base_dir / target_path).resolve() if target_path else base_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    opts       = _build_opts(mode, quality, output_dir)
+    opts       = _build_opts(mode, quality, output_dir, subtitles)
 
     log("📋", f"[{job_short}] Job created — mode={mode} quality={quality} url={url[:60]}")
     log("📁", f"[{job_short}] Output dir: {output_dir}")
@@ -538,6 +595,7 @@ class JobRequest(BaseModel):
     mode:        Literal["audio", "video"] = "audio"
     quality:     str                       = "best"
     target_path: str                       = ""
+    subtitles:   list[str]                 = []
 
 
 def extract_youtube_id(url: str) -> str | None:
@@ -566,7 +624,7 @@ async def create_job(req: JobRequest) -> dict:
     )
     log("✅", f"Job {job_id[:8]} inserted into queue")
     asyncio.create_task(
-        _run_job(job, req.url, req.mode, req.quality, req.target_path)
+        _run_job(job, req.url, req.mode, req.quality, req.target_path, req.subtitles)
     )
     return {"job_id": job_id}
 
@@ -578,6 +636,12 @@ async def cancel_job(job_id: str) -> dict:
     job = _jobs.get(job_id)
     if job:
         job.cancel_event.set()
+        if getattr(job, 'zip_path', None) and os.path.exists(job.zip_path):
+            try:
+                os.remove(job.zip_path)
+                log("🗑️", f"Deleted zip temp file for job {job_id[:8]}")
+            except Exception as e:
+                log("⚠️", f"Failed to delete zip file: {e}")
         _jobs.pop(job_id, None)
         log("🛑", f"Job {job_id[:8]} cancel signal sent")
     else:
@@ -585,7 +649,6 @@ async def cancel_job(job_id: str) -> dict:
         await loop.run_in_executor(None, db.queue_delete, job_id)
         log("🗑️", f"Job {job_id[:8]} not in memory — DB row deleted directly")
     return {"cancelled": job_id}
-
 
 @app.get("/api/queue")
 async def get_queue(page: int = 0, limit: int = 10) -> dict:
@@ -613,7 +676,7 @@ async def ws_queue(ws: WebSocket) -> None:
                     limit = int(data.get("limit", limit))
                     last_snapshot = {}
                     last_total    = -1
-        except Exception:
+        except (WebSocketDisconnect, Exception):
             pass
 
     reader_task = asyncio.create_task(_reader())
@@ -643,6 +706,60 @@ async def ws_queue(ws: WebSocket) -> None:
 
     except (WebSocketDisconnect, Exception):
         log("🔌", "WS /ws/queue — client disconnected")
+    finally:
+        reader_task.cancel()
+
+
+@app.websocket("/ws/zip_queue")
+async def ws_zip_queue(ws: WebSocket) -> None:
+    await ws.accept()
+    client_ip = ws.client.host if ws.client else "127.0.0.1"
+    log("🔌", f"WS /ws/zip_queue — client connected from {client_ip}")
+    page           = 0
+    limit          = 5
+    last_snapshot: dict[str, dict] = {}
+    last_total     = -1
+
+    async def _reader() -> None:
+        nonlocal page, limit, last_snapshot, last_total
+        try:
+            while True:
+                data = await ws.receive_json()
+                if "page" in data:
+                    page  = int(data["page"])
+                    limit = int(data.get("limit", limit))
+                    last_snapshot = {}
+                    last_total    = -1
+        except Exception:
+            pass
+
+    reader_task = asyncio.create_task(_reader())
+    loop        = asyncio.get_event_loop()
+
+    try:
+        while True:
+            rows, total = await loop.run_in_executor(None, db.zip_list_by_ip, client_ip, page, limit)
+            current     = {r["job_id"]: r for r in rows}
+
+            changed = [r for jid, r in current.items() if last_snapshot.get(jid) != r]
+            removed = [jid for jid in last_snapshot if jid not in current]
+
+            if changed or removed or total != last_total:
+                await ws.send_json({
+                    "type":    "update",
+                    "total":   total,
+                    "page":    page,
+                    "limit":   limit,
+                    "jobs":    changed,
+                    "removed": removed,
+                })
+                last_snapshot = current
+                last_total    = total
+
+            await asyncio.sleep(0.4)
+
+    except (WebSocketDisconnect, Exception):
+        log("🔌", "WS /ws/zip_queue — client disconnected")
     finally:
         reader_task.cancel()
 
@@ -692,7 +809,15 @@ async def video_info(url: str) -> dict:
             "title":    info.get("title"),
             "count":    len(entries),
             "uploader": info.get("uploader") or info.get("channel"),
+            "entries":  [{"url": e.get("url"), "title": e.get("title")} for e in entries if e.get("url")],
         }
+    
+    # For single videos, let's collect subtitle languages
+    subs = info.get("subtitles") or {}
+    auto_subs = info.get("automatic_captions") or {}
+    sub_langs = list(set(list(subs.keys()) + list(auto_subs.keys())))
+    sub_langs.sort()
+
     return {
         "type":       "video",
         "title":      info.get("title"),
@@ -700,6 +825,7 @@ async def video_info(url: str) -> dict:
         "thumbnail":  info.get("thumbnail"),
         "uploader":   info.get("uploader") or info.get("channel"),
         "view_count": info.get("view_count"),
+        "subtitles":  sub_langs,
     }
 
 
@@ -714,6 +840,7 @@ async def list_media(
     min_duration: int | None = None,
     max_duration: int | None = None,
     tags:         str | None = None,
+    sub_lang:     str | None = None,
     sort_by:      str = "download_date",
     order:        str = "desc",
     limit:        int = 60,
@@ -724,7 +851,7 @@ async def list_media(
     items    = await loop.run_in_executor(
         None, db.query_media,
         mode, channel_id, min_views, max_views, min_likes,
-        min_duration, max_duration, tag_list,
+        min_duration, max_duration, tag_list, sub_lang,
         sort_by, order, limit, offset,
     )
     base_str = str(AUDIO_DIR.resolve()) if mode == "audio" else str(VIDEO_DIR.resolve())
@@ -745,10 +872,138 @@ async def list_channels() -> list[dict]:
     return await loop.run_in_executor(None, db.get_channels)
 
 
+@app.get("/api/sub_langs")
+async def list_sub_langs(mode: str = "audio") -> list[str]:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, db.get_all_sub_langs, mode)
+
+
 @app.get("/api/tags")
 async def list_tags(mode: Literal["audio", "video"] = "audio") -> list[str]:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, db.get_all_tags, mode)
+
+_active_zip_tasks: dict[str, threading.Event] = {}
+
+class ZipJobRequest(BaseModel):
+    mode:         Literal["audio", "video"] = "audio"
+    channel_id:   int | None = None
+    min_views:    int | None = None
+    max_views:    int | None = None
+    min_likes:    int | None = None
+    min_duration: int | None = None
+    max_duration: int | None = None
+    tags:         str | None = None
+    sub_lang:     str | None = None
+    sort_by:      str = "download_date"
+    order:        str = "desc"
+
+@app.post("/api/zip_jobs")
+async def create_zip_job(req: ZipJobRequest, request: Request) -> dict:
+    loop = asyncio.get_event_loop()
+    job_id = f"z_{uuid4().hex[:8]}"
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    
+    await loop.run_in_executor(None, db.zip_insert, job_id, client_ip, "queued")
+    log("✅", f"Zip Job {job_id} inserted for IP {client_ip}")
+    
+    cancel_ev = threading.Event()
+    _active_zip_tasks[job_id] = cancel_ev
+    asyncio.create_task(_zip_worker(job_id, client_ip, req, cancel_ev))
+    return {"job_id": job_id}
+
+async def _zip_worker(job_id: str, client_ip: str, req: ZipJobRequest, cancel_ev: threading.Event):
+    loop = asyncio.get_event_loop()
+    
+    try:
+        tag_list = [t.strip() for t in req.tags.split(",")] if req.tags else None
+        
+        items = await loop.run_in_executor(
+            None, db.query_media,
+            req.mode, req.channel_id, req.min_views, req.max_views, req.min_likes,
+            req.min_duration, req.max_duration, tag_list, req.sub_lang,
+            req.sort_by, req.order, 10000, 0
+        )
+        
+        if not items:
+            await loop.run_in_executor(None, lambda: db.zip_update(job_id, status="error", error_msg="No matching files found to zip"))
+            _active_zip_tasks.pop(job_id, None)
+            return
+
+        final_zip_path = str(ZIPS_DIR / f"{job_id}.zip")
+        await loop.run_in_executor(None, lambda: db.zip_update(job_id, status="zipping", title="Exporting Library...", percent=0, zip_path=final_zip_path))
+        
+        def create_zip():
+            with zipfile.ZipFile(final_zip_path, 'w', zipfile.ZIP_STORED) as zf:
+                total = len(items)
+                for i, it in enumerate(items):
+                    if cancel_ev.is_set():
+                        break
+                    
+                    if i % max(1, total // 50) == 0 or i == total - 1:
+                        db.zip_update(job_id, percent=round((i / total) * 100, 1), title=f"Zipped {i}/{total}")
+                    
+                    fp = it.get("file_path")
+                    if fp and os.path.exists(fp):
+                        zf.write(fp, arcname=os.path.basename(fp))
+                        
+        await loop.run_in_executor(None, create_zip)
+        
+        if cancel_ev.is_set():
+            if os.path.exists(final_zip_path):
+                os.remove(final_zip_path)
+            await loop.run_in_executor(None, db.zip_delete, job_id)
+            _active_zip_tasks.pop(job_id, None)
+            return
+            
+        await loop.run_in_executor(None, lambda: db.zip_update(job_id, status="done", percent=100, title=f"Complete ({len(items)} items)"))
+        _active_zip_tasks.pop(job_id, None)
+        
+    except Exception as e:
+        log("❌", f"[{job_id}] Zip Worker error: {e}")
+        await loop.run_in_executor(None, lambda: db.zip_update(job_id, status="error", error_msg=str(e), percent=0))
+        _active_zip_tasks.pop(job_id, None)
+
+
+@app.get("/api/zip_jobs/{job_id}/download")
+async def download_zip_job(job_id: str):
+    loop = asyncio.get_event_loop()
+    job = await loop.run_in_executor(None, db.zip_get, job_id)
+    if not job or not job.get("zip_path") or not os.path.exists(job["zip_path"]):
+        raise HTTPException(status_code=404, detail="Zip file not found or expired")
+    
+    return FileResponse(
+        job["zip_path"],
+        media_type="application/zip",
+        filename=f"ytgrab_export_{job_id[:8]}.zip"
+    )
+
+@app.delete("/api/zip_jobs/{job_id}")
+async def cancel_zip_job(job_id: str) -> dict:
+    loop = asyncio.get_event_loop()
+    log("🛑", f"DELETE /api/zip_jobs/{job_id} — cancel/dismiss request")
+    
+    cancel_ev = _active_zip_tasks.get(job_id)
+    if cancel_ev:
+        cancel_ev.set()
+        log("🛑", f"Zip Job {job_id[:8]} cancel signal sent")
+    else:
+        # Job finished/errored — just nuke the DB row and file
+        job = await loop.run_in_executor(None, db.zip_get, job_id)
+        if job and job.get("zip_path") and os.path.exists(job["zip_path"]):
+             try:
+                 os.remove(job["zip_path"])
+             except:
+                 pass
+        await loop.run_in_executor(None, db.zip_delete, job_id)
+        log("🗑️", f"Zip Job {job_id[:8]} not running — DB row/file deleted directly")
+    return {"cancelled": job_id}
+
+
+@app.get("/api/media/{media_id}/transcripts")
+async def get_media_transcripts(media_id: int) -> list[dict]:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, db.get_transcripts, media_id)
 
 
 @app.delete("/api/media/{media_id}")

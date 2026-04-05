@@ -108,13 +108,13 @@
       margin-bottom: 1rem;
       box-shadow: 0 6px 48px rgba(0, 0, 0, .6);
       position: relative;
-      overflow: hidden
     }
 
     .card::before {
       content: '';
       position: absolute;
       inset: 0;
+      border-radius: var(--r);
       background: radial-gradient(ellipse at top left, rgba(124, 58, 237, .06) 0%, transparent 60%);
       pointer-events: none
     }
@@ -1325,7 +1325,7 @@
           autocomplete="off" />
       </div>
       <button class="btn-g" id="info-btn" onclick="fetchInfo()">Info</button>
-      <button class="btn-p" id="dl-btn" onclick="startDownload()">
+      <button class="btn-p" id="dl-btn" style="display:none;">
         <span id="dl-txt">Download</span>
       </button>
     </div>
@@ -1354,7 +1354,12 @@
       <div class="i-body">
         <div class="i-title" id="i-title"></div>
         <div class="i-meta" id="i-meta"></div>
+        <div id="i-subs" style="margin-top: 0.5rem; display: none; gap:0.4rem; flex-wrap:wrap;"></div>
       </div>
+    </div>
+    
+    <!-- Playlist box -->
+    <div id="playlist-box" style="display:none; width:100%; margin-top:0.65rem; margin-bottom:1rem; flex-direction:column; gap:0.5rem;">
     </div>
   </div>
 
@@ -1377,6 +1382,25 @@
     </div>
   </div>
 
+  <!-- ── Zip Queue card ─────────────────────────────────────────────────────── -->
+  <div class="card" id="zip-queue-card">
+    <div class="card-hdr">
+      <span class="card-title">📦 Zip Export Queue</span>
+      <span id="zip-queue-count" style="font-size:.76rem;color:var(--m)"></span>
+    </div>
+    <div class="queue-list" id="zip-queue-list">
+      <div class="empty">
+        <div class="empty-icon">📦</div>
+        <div>No active zips</div>
+      </div>
+    </div>
+    <div class="pager" id="zip-queue-pager" style="display:none">
+      <button class="pager-btn" id="zq-prev" onclick="zipPrev()">‹</button>
+      <span class="pager-info" id="zip-pager-info"></span>
+      <button class="pager-btn" id="zq-next" onclick="zipNext()">›</button>
+    </div>
+  </div>
+
   <!-- ── Library card ───────────────────────────────────────────────────────── -->
   <div class="card">
     <div class="sec-hdr">
@@ -1387,41 +1411,58 @@
       </div>
     </div>
 
-    <div class="filter-bar">
-      <div class="filter-group">
-        <label>Channel</label>
-        <select id="f-channel">
-          <option value="">All channels</option>
-        </select>
-      </div>
-      <div class="filter-group">
-        <label>Min duration (min)</label>
-        <input type="number" id="f-dur-min" placeholder="e.g. 5" min="0" />
-      </div>
-      <div class="filter-group">
-        <label>Max duration (min)</label>
-        <input type="number" id="f-dur-max" placeholder="e.g. 60" min="0" />
-      </div>
-      <div class="filter-group">
-        <label>Min views</label>
-        <input type="number" id="f-views" placeholder="e.g. 10000" min="0" />
-      </div>
-      <div class="filter-group">
-        <label>Min likes</label>
-        <input type="number" id="f-likes" placeholder="e.g. 500" min="0" />
-      </div>
-      <div class="filter-group">
-        <label>Tags (comma-sep)</label>
-        <input type="text" id="f-tags" placeholder="music, rock…" />
-      </div>
-      <div class="filter-actions">
-        <button class="btn-g btn-xs" onclick="applyFilters()">Apply</button>
-        <button class="btn-g btn-xs" onclick="clearFilters()">Clear</button>
+    <!-- Filter modal -->
+    <div id="filter-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:1000; align-items:center; justify-content:center;">
+      <div class="card" style="width:90%; max-width:400px; padding:1.5rem; background:var(--s2); margin-bottom:0;">
+        <h3 style="margin-bottom:1rem; font-size:1rem;">Filters</h3>
+        <div class="filter-bar" style="display:flex; flex-direction:column; background:transparent; border:none; padding:0; margin:0; gap:0.6rem;">
+          <div class="filter-group" style="width:100%;">
+            <label>Channel</label>
+            <select id="f-channel" style="width:100%;"><option value="">All channels</option></select>
+          </div>
+          <div class="filter-group" style="width:100%;">
+            <label>Subtitle Language</label>
+            <select id="f-sub-lang" style="width:100%;"><option value="">All languages</option></select>
+          </div>
+          <div style="display:flex; gap:0.5rem; width:100%;">
+            <div class="filter-group" style="flex:1;">
+              <label>Min dur (m)</label>
+              <input type="number" id="f-dur-min" placeholder="e.g. 5" min="0" style="width:100%;"/>
+            </div>
+            <div class="filter-group" style="flex:1;">
+              <label>Max dur (m)</label>
+              <input type="number" id="f-dur-max" placeholder="e.g. 60" min="0" style="width:100%;"/>
+            </div>
+          </div>
+          <div style="display:flex; gap:0.5rem; width:100%;">
+            <div class="filter-group" style="flex:1;">
+              <label>Min views</label>
+              <input type="number" id="f-views" placeholder="e.g. 10k" min="0" style="width:100%;"/>
+            </div>
+            <div class="filter-group" style="flex:1;">
+              <label>Min likes</label>
+              <input type="number" id="f-likes" placeholder="e.g. 500" min="0" style="width:100%;"/>
+            </div>
+          </div>
+          <div class="filter-group" style="width:100%;">
+            <label>Tags (comma-sep)</label>
+            <input type="text" id="f-tags" placeholder="music, rock…" style="width:100%;"/>
+          </div>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:1.5rem;">
+          <button class="btn-ghost btn-xs" onclick="closeFilterModal()">Cancel</button>
+          <button class="btn-ghost btn-xs" onclick="clearFilters(); closeFilterModal()">Clear</button>
+          <button class="btn-p btn-xs" onclick="applyFilters(); closeFilterModal()">Apply</button>
+        </div>
       </div>
     </div>
 
     <div class="sort-row">
-      <label>Sort by</label>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <button class="btn-g btn-xs" onclick="openFilterModal()" style="padding:0.4rem 0.6rem;">🔍 Filter</button>
+        <button class="btn-p btn-xs" onclick="downloadAllFiltered()" style="padding:0.4rem 0.6rem;">⬇ Download All</button>
+      </div>
+      <label style="margin-left:auto; align-self:center;">Sort by</label>
       <select id="sort-field" onchange="applyFilters()">
         <option value="download_date">Download date</option>
         <option value="release_date">Release date</option>
@@ -1467,6 +1508,20 @@
     </div>
   </div>
 
+  <!-- ── Transcript modal ────────────────────────────────────────────────── -->
+  <div class="modal-overlay" id="transcript-modal">
+    <div class="modal" style="max-width:800px; height:80vh; display:flex; flex-direction:column;">
+      <div class="modal-header">
+        <h3>📝 Transcripts</h3>
+        <button class="modal-close" onclick="closeTranscriptModal()">✕</button>
+      </div>
+      <div id="tr-lang-tabs" style="padding:0.4rem 1rem; border-bottom:1px solid var(--b2); display:flex; gap:0.5rem; overflow-x:auto;">
+      </div>
+      <div class="fp-body" id="tr-body" style="padding:1rem; font-size:0.9rem; line-height:1.6; white-space:pre-wrap; overflow-y:auto; flex:1; color:var(--fg);">
+      </div>
+    </div>
+  </div>
+
   <!-- ── Confirm modal ──────────────────────────────────────────────────────── -->
   <div id="confirm-modal">
     <div class="confirm-box">
@@ -1489,8 +1544,11 @@
     const LIB_LIMIT = 30, QUEUE_PG = 5;
     let queuePage = 0, queueTotal = 0;
     let queueWs = null;
+    let wsZip = null;
     // job_id → row data (source of truth for rendered cards)
     const queueJobs = new Map();
+    const zipJobs = new Map();
+    let zipPage = 0, zipTotal = 0;
     let fpType = 'audio', fpPath = '', fpCurrentPath = '';
     let _wsReconnectBanner = null;
 
@@ -1576,37 +1634,264 @@
     }
 
     // ── Info fetch ─────────────────────────────────────────────────────────────
+    let cancelInfoFetches = false;
+    // Global variables to store subtitle & playlist state
+    let lastFetchedUrl = '';
+    let selectedSubs = new Set(['en']);
+    let currentPlaylistEntries = [];
+    let selectedPlaylistIndices = new Set();
+    
+    function togglePlaylistItem(i) {
+        const card = document.getElementById(`pl-item-${i}`);
+        const btn = card.querySelector('.btn-toggle');
+        if (selectedPlaylistIndices.has(i)) {
+            selectedPlaylistIndices.delete(i);
+            card.style.opacity = '0.5';
+            btn.innerHTML = '➕';
+            btn.title = 'Select';
+            btn.style.color = '#fff';
+            btn.style.background = 'var(--m)';
+        } else {
+            selectedPlaylistIndices.add(i);
+            card.style.opacity = '1';
+            btn.innerHTML = '&times;';
+            btn.title = 'Unselect';
+            btn.style.color = 'var(--t)';
+            btn.style.background = 'var(--s3)';
+        }
+    }
+
+    document.getElementById('url-input').addEventListener('input', (e) => {
+        const dlBtn = document.getElementById('dl-btn');
+        if (e.target.value.trim() !== lastFetchedUrl || !lastFetchedUrl) {
+           dlBtn.style.display = 'none';
+        } else {
+           dlBtn.style.display = 'inline-flex';
+        }
+    });
+
+    function renderSubs(containerId, langs) {
+        const c = document.getElementById(containerId);
+        c.innerHTML = '';
+        if (!langs || !langs.length) {
+            c.style.display = 'none';
+            return;
+        }
+        c.style.display = 'block';
+        c.style.alignItems = 'normal';
+
+        selectedSubs.clear();
+        if (langs.includes('en')) selectedSubs.add('en');
+
+        const disp = new Intl.DisplayNames(['en'], { type: 'language' });
+        function getLangName(code) {
+             try { return disp.of(code) || code; } catch(e) { return code; }
+        }
+
+        c.innerHTML = `
+          <div style="display:flex; flex-direction:column; gap:0.4rem; width:100%; position:relative;">
+            <div style="display:flex; align-items:center;">
+              <span style="font-size:0.77rem; color:var(--m); font-weight:500; margin-right:0.4rem;">Subtitles:</span>
+              <div style="position:relative; max-width:250px;">
+                <button class="btn-g btn-xs" style="width:100%; justify-content:space-between; min-width:140px;" onclick="const m = document.getElementById('${containerId}-menu'); m.style.display = m.style.display === 'none' ? 'block' : 'none'; event.stopPropagation();">
+                   Add Subtitles... <span>▼</span>
+                </button>
+                <div id="${containerId}-menu" style="display:none; position:absolute; top:100%; left:0; width:100%; background:var(--s2); border:1px solid var(--b2); border-radius:var(--rx); padding:0.5rem; z-index:100; max-height:200px; overflow-y:auto; box-shadow:0 4px 12px rgba(0,0,0,0.5);">
+                   <div style="display:flex; justify-content:space-between; margin-bottom:0.4rem; border-bottom:1px solid var(--b1); padding-bottom:0.3rem;">
+                     <button class="btn-ghost btn-xs" onclick="event.preventDefault(); window._selectAllSubs('${containerId}', true)">All</button>
+                     <button class="btn-ghost btn-xs" onclick="event.preventDefault(); window._selectAllSubs('${containerId}', false)">None</button>
+                   </div>
+                   <div id="${containerId}-list" style="display:flex; flex-direction:column; gap:0.2rem;"></div>
+                </div>
+              </div>
+            </div>
+            <div id="${containerId}-chips" style="display:flex; flex-wrap:wrap; gap:0.3rem; margin-top:0.2rem;"></div>
+          </div>
+        `;
+        
+        const list = document.getElementById(`${containerId}-list`);
+        langs.forEach(lang => {
+            const lbl = document.createElement('label');
+            lbl.style.cssText = 'display:flex; align-items:center; gap:0.4rem; cursor:pointer; color:var(--t); padding:0.2rem; border-radius:4px; font-size:0.75rem;';
+            lbl.onmouseover = () => lbl.style.background = 'var(--s3)';
+            lbl.onmouseout = () => lbl.style.background = 'transparent';
+            
+            const chk = document.createElement('input');
+            chk.type = 'checkbox';
+            chk.value = lang;
+            chk.checked = selectedSubs.has(lang);
+            chk.onchange = (e) => {
+                if (e.target.checked) selectedSubs.add(lang);
+                else selectedSubs.delete(lang);
+                updateChips(containerId, langs);
+            };
+            
+            lbl.appendChild(chk);
+            lbl.appendChild(document.createTextNode(getLangName(lang) + ` (${lang})`));
+            list.appendChild(lbl);
+        });
+        
+        window._selectAllSubs = (cid, all) => {
+             const checkboxes = document.getElementById(`${cid}-list`).querySelectorAll('input[type="checkbox"]');
+             checkboxes.forEach(c => {
+                  c.checked = all;
+                  if (all) selectedSubs.add(c.value);
+                  else selectedSubs.delete(c.value);
+             });
+             updateChips(cid, langs);
+        };
+        
+        updateChips(containerId, langs);
+        
+        document.addEventListener('click', (e) => {
+             const menu = document.getElementById(`${containerId}-menu`);
+             if (menu && menu.style.display === 'block' && !e.target.closest('.btn-g')) {
+                 if (!menu.contains(e.target)) {
+                     menu.style.display = 'none';
+                 }
+             }
+        }, { capture: true });
+    }
+
+    function updateChips(containerId, allLangs) {
+         const chips = document.getElementById(`${containerId}-chips`);
+         if (!chips) return;
+         chips.innerHTML = '';
+         
+         const disp = new Intl.DisplayNames(['en'], { type: 'language' });
+         
+         Array.from(selectedSubs).forEach(lang => {
+             if (!allLangs.includes(lang)) return;
+             let name = lang; try { name = disp.of(lang) || lang; } catch(e){}
+             
+             const chip = document.createElement('div');
+             chip.style.cssText = 'display:inline-flex; align-items:center; gap:0.3rem; padding:0.15rem 0.4rem; background:rgba(124,58,237,0.15); border:1px solid rgba(124,58,237,0.3); border-radius:4px; color:var(--t); font-size:0.7rem; font-weight:600;';
+             chip.innerHTML = `<span>${esc(name)}</span>`;
+             
+             const x = document.createElement('span');
+             x.innerHTML = '×';
+             x.style.cssText = 'cursor:pointer; opacity:0.6; padding:0 0.2rem; margin-left:0.1rem;';
+             x.onmouseover = () => x.style.opacity = '1';
+             x.onmouseout = () => x.style.opacity = '0.6';
+             x.onclick = () => {
+                 selectedSubs.delete(lang);
+                 const chk = document.querySelector(`#${containerId}-list input[value="${lang}"]`);
+                 if (chk) chk.checked = false;
+                 updateChips(containerId, allLangs);
+             };
+             chip.appendChild(x);
+             chips.appendChild(chip);
+         });
+    }
+
+    function getCheckedSubs(containerId) {
+        return Array.from(selectedSubs);
+    }
+
+    // ── Info fetch ─────────────────────────────────────────────────────────────
     async function fetchInfo() {
+      cancelInfoFetches = true;
       const url = document.getElementById('url-input').value.trim();
       if (!url) return;
       const box = document.getElementById('info-box');
-      box.classList.remove('on'); // hide while loading
+      box.innerHTML = `
+        <div class="i-thumb" style="background: var(--s3); position:relative; overflow:hidden;">
+            <div style="position:absolute; inset:0; background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.05) 50%, transparent 100%); background-size: 200% 100%; animation: shimmer 1.2s linear infinite;"></div>
+        </div>
+        <div class="i-body" style="display:flex; flex-direction:column; justify-content:center; gap:0.6rem;">
+          <div style="height:14px; width:60%; background: var(--s3); border-radius:4px; position:relative; overflow:hidden;">
+             <div style="position:absolute; inset:0; background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.05) 50%, transparent 100%); background-size: 200% 100%; animation: shimmer 1.2s linear infinite;"></div>
+          </div>
+          <div style="height:10px; width:40%; background: var(--s3); border-radius:4px; position:relative; overflow:hidden;">
+             <div style="position:absolute; inset:0; background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.05) 50%, transparent 100%); background-size: 200% 100%; animation: shimmer 1.2s linear infinite;"></div>
+          </div>
+        </div>
+      `;
+      box.classList.add('on');
+      document.getElementById('playlist-box').style.display = 'none';
+      document.getElementById('dl-btn').style.display = 'none';
+
       const btn = document.getElementById('info-btn');
       btn.disabled = true;
-      btn.textContent = '...';
+      btn.innerHTML = '<span class="spin"></span>';
       try {
         const res = await fetch('/api/info?url=' + encodeURIComponent(url));
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Failed to fetch info');
         if (!data.title) throw new Error('No info returned — URL may be invalid or private');
 
-        let badge = '';
-        if (data.type === 'playlist') badge = '<span class="badge bp">📋 Playlist</span>';
-        else if (data.type === 'channel') badge = '<span class="badge bc">📡 Channel</span>';
-        else badge = '<span class="badge bv">🎬 Video</span>';
-        document.getElementById('i-title').innerHTML = badge + esc(data.title || '');
-        const parts = [];
-        if (data.uploader) parts.push(data.uploader);
-        if (data.count) parts.push(data.count + ' items');
-        if (data.duration) parts.push(fmtDur(data.duration));
-        if (data.view_count) parts.push(fmtN(data.view_count) + ' views');
-        document.getElementById('i-meta').textContent = parts.join(' · ');
-        const ts = document.getElementById('i-thumb-slot');
-        if (data.thumbnail) ts.innerHTML = `<img class="i-thumb" src="${esc(data.thumbnail)}" alt=""/>`;
-        else ts.innerHTML = `<div class="i-ph">${data.type === 'channel' ? '📡' : '📋'}</div>`;
-        box.classList.add('on'); // only show when we have real data
+        if (data.type === 'video') {
+            data.entries = [{ url: data.url || url, title: data.title, predefined: data }];
+        }
+        
+        currentPlaylistEntries = data.entries || [];
+        selectedPlaylistIndices = new Set(currentPlaylistEntries.map((_, i) => i));
+
+        if (data.type !== 'video') {
+            box.innerHTML = `
+              <div id="i-thumb-slot"></div>
+              <div class="i-body">
+                <div class="i-title" id="i-title"></div>
+                <div class="i-meta" id="i-meta"></div>
+              </div>
+            `;
+            let badge = '';
+            if (data.type === 'playlist') badge = '<span class="badge bp">📋 Playlist</span>';
+            else if (data.type === 'channel') badge = '<span class="badge bc">📡 Channel</span>';
+            document.getElementById('i-title').innerHTML = badge + esc(data.title || '');
+            const parts = [];
+            if (data.uploader) parts.push(data.uploader);
+            if (data.count) parts.push(data.count + ' items');
+            if (data.duration && !data.count) parts.push(fmtDur(data.duration));
+            document.getElementById('i-meta').textContent = parts.join(' · ');
+            const ts = document.getElementById('i-thumb-slot');
+            if (data.thumbnail) ts.innerHTML = `<img class="i-thumb" src="${esc(data.thumbnail)}" alt=""/>`;
+            else ts.innerHTML = `<div class="i-ph">${data.type === 'channel' ? '📡' : '📋'}</div>`;
+            box.classList.add('on');
+        } else {
+            box.classList.remove('on');
+        }
+        
+        lastFetchedUrl = url;
+        
+        const dlBtn = document.getElementById('dl-btn');
+        if (url === document.getElementById('url-input').value.trim()) {
+            dlBtn.style.display = 'inline-flex';
+        }
+        dlBtn.querySelector('#dl-txt').textContent = data.type === 'video' ? 'Download' : 'Download All';
+        dlBtn.onclick = data.type === 'video' ? () => submitSingleJob(currentPlaylistEntries[0].url, getCheckedSubs('pl-subs-0'), null) : submitAllPlaylistJobs;
+        
+        const pb = document.getElementById('playlist-box');
+        pb.style.display = 'flex';
+        pb.innerHTML = '';
+        cancelInfoFetches = false;
+        
+        currentPlaylistEntries.forEach((entry, i) => {
+            const row = document.createElement('div');
+            row.id = `pl-item-${i}`;
+            row.className = 'job-card';
+            row.style.cssText = 'position:relative; background:var(--s2); border:1px solid var(--b1); padding:0.8rem; border-radius:var(--rs); display:flex; gap:0.75rem; flex-direction:row; align-items:flex-start; width:100%; transition: opacity 0.2s;';
+            row.innerHTML = `
+              <div id="pl-thumb-slot-${i}">
+                 <div class="i-ph">📺</div>
+              </div>
+              <div class="i-body" style="padding-right:2rem;">
+                 <div class="i-title">${esc(entry.title)}</div>
+                 <div class="i-meta" id="pl-meta-${i}">Fetching info <span class="spin" style="width:10px;height:10px;border-width:2px;vertical-align:middle;margin-left:0.2rem;"></span></div>
+                 <div id="pl-subs-${i}" style="margin-top:0.4rem; display:none; gap:0.4rem; flex-wrap:wrap;"></div>
+              </div>
+              <button class="btn-ghost btn-toggle" title="Unselect" onclick="togglePlaylistItem(${i})" style="position:absolute; top:0.5rem; right:0.5rem; padding:0; font-size:1.4rem; color:var(--t); border-radius:50%; width:28px; height:28px; display:flex; align-items:center; justify-content:center; background:var(--s3);">&times;</button>
+            `;
+            pb.appendChild(row);
+
+            if (entry.predefined) {
+                 updatePlaylistCard(i, entry.predefined);
+            }
+        });
+        
+        fetchPlaylistItemsSeq(currentPlaylistEntries.filter(e => !e.predefined));
       } catch (e) {
-        box.classList.remove('on'); // keep hidden
+        box.classList.remove('on');
         toast('❌ ' + e.message, 'er');
       } finally {
         btn.disabled = false;
@@ -1614,54 +1899,131 @@
       }
     }
 
+    function updatePlaylistCard(i, data) {
+         currentPlaylistEntries[i].info = data;
+         const meta = [];
+         if (data.uploader) meta.push(data.uploader);
+         if (data.duration) meta.push(fmtDur(data.duration));
+         if (data.view_count) meta.push(fmtN(data.view_count) + ' views');
+         document.getElementById(`pl-meta-${i}`).innerHTML = meta.join(' · ');
+
+         const ts = document.getElementById(`pl-thumb-slot-${i}`);
+         if (data.thumbnail) ts.innerHTML = `<img class="i-thumb" src="${esc(data.thumbnail)}" alt=""/>`;
+
+         renderSubs(`pl-subs-${i}`, data.subtitles);
+    }
+
+    async function fetchPlaylistItemsSeq(entries) {
+       for (let e = 0; e < entries.length; e++) {
+            if (cancelInfoFetches) break;
+            const entry = entries[e];
+            const i = currentPlaylistEntries.indexOf(entry);
+            if (entry.predefined || entry.info) continue;
+            try {
+                const res = await fetch('/api/info?url=' + encodeURIComponent(entry.url));
+                const data = await res.json();
+                if (data && data.type === 'video') {
+                   updatePlaylistCard(i, data);
+                } else {
+                   document.getElementById(`pl-meta-${i}`).textContent = 'Unavailable';
+                }
+            } catch (err) {
+                document.getElementById(`pl-meta-${i}`).textContent = 'Failed to load info';
+            }
+       }
+    }
 
     // ── Start download (non-blocking) ──────────────────────────────────────────
-    async function startDownload() {
-      const url = document.getElementById('url-input').value.trim();
-      if (!url) { toast('Paste a URL first', 'er'); return; }
-      document.getElementById('dl-btn').disabled = true;
-      document.getElementById('dl-txt').innerHTML = '<span class="spin"></span> Starting…';
-      try {
-        const res = await fetch('/api/jobs', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url, mode: dlMode, quality, target_path: targetPath }),
-        });
+    async function submitSingleJob(url, subtitles, btnElem = null) {
+        if (!url) return;
+        const ogBtn = btnElem || document.getElementById('dl-btn');
+        const isMain = !btnElem;
+        const originalHtml = ogBtn.innerHTML;
+        ogBtn.disabled = true;
         
-        const data = await res.json().catch(()=>({}));
-        
-        if (res.status === 409 && data.detail?.duplicate) {
-          const ex = data.detail.media;
-          const ok = await showConfirm(
-            'Duplicate Found',
-            `"${ex.title || 'This video'}" was already downloaded.\nMove it to your currently selected Target Folder?`,
-            { icon: '🔄', okLabel: 'Yes, Move It', okClass: 'btn-p' }
-          );
-          if (ok) {
-            const mRes = await fetch('/api/media/' + ex.id + '/move', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ new_path: targetPath })
-            });
-            const mData = await mRes.json().catch(()=>({}));
-            if (mRes.ok) {
-              toast('Moved successfully', 'ok');
-              loadLibrary();
-            } else {
-              toast('Move failed: ' + (mData.detail || mData.reason || 'Error'), 'er');
-            }
-          }
-          return;
+        if (isMain) {
+            ogBtn.querySelector('#dl-txt').innerHTML = '<span class="spin"></span> Starting…';
+        } else {
+            ogBtn.innerHTML = '<span class="spin"></span>';
         }
 
-        if (!res.ok) throw new Error(data.detail || 'HTTP ' + res.status);
-        toast('Download queued!', 'in');
-      } catch (e) {
-        toast('Error: ' + e.message, 'er');
-      } finally {
-        document.getElementById('dl-btn').disabled = false;
-        document.getElementById('dl-txt').textContent = 'Download';
-      }
+        try {
+            const res = await fetch('/api/jobs', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ url, mode: dlMode, quality, target_path: targetPath, subtitles }),
+            });
+            const data = await res.json().catch(()=>({}));
+            
+            if (res.status === 409 && data.detail?.duplicate) {
+               const ex = data.detail.media;
+               const ok = await showConfirm(
+                 'Duplicate Found',
+                 `"${ex.title || 'This video'}" was already downloaded.\nMove it to your currently selected Target Folder?`,
+                 { icon: '🔄', okLabel: 'Yes, Move It', okClass: 'btn-p' }
+               );
+               if (ok) {
+                 const mRes = await fetch('/api/media/' + ex.id + '/move', {
+                   method: 'POST',
+                   headers: { 'Content-Type': 'application/json' },
+                   body: JSON.stringify({ new_path: targetPath })
+                 });
+                 if (mRes.ok) {
+                   toast('Moved successfully', 'ok');
+                   loadLibrary();
+                 } else {
+                   const mData = await mRes.json().catch(()=>({}));
+                   toast('Move failed: ' + (mData.detail || mData.reason || 'Error'), 'er');
+                 }
+               }
+               return;
+            }
+            if (!res.ok) throw new Error(data.detail || 'HTTP ' + res.status);
+            toast('Download queued!', 'in');
+        } catch(e) {
+            toast('Error: ' + e.message, 'er');
+        } finally {
+            ogBtn.disabled = false;
+            ogBtn.innerHTML = originalHtml;
+        }
+    }
+
+    async function submitAllPlaylistJobs() {
+        const ogBtn = document.getElementById('dl-btn');
+        const originalHtml = ogBtn.innerHTML;
+        ogBtn.disabled = true;
+        ogBtn.querySelector('#dl-txt').innerHTML = '<span class="spin"></span> Starting…';
+
+        const indices = Array.from(selectedPlaylistIndices);
+        if (!indices.length) {
+            toast('No items selected', 'er');
+            ogBtn.disabled = false;
+            ogBtn.innerHTML = originalHtml;
+            return;
+        }
+
+        for (const i of indices) {
+            const entry = currentPlaylistEntries[i];
+            const data = entry.info || entry.predefined;
+            if (data) {
+                try {
+                    const res = await fetch('/api/jobs', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ url: entry.url, mode: dlMode, quality, target_path: targetPath, subtitles: getCheckedSubs(`pl-subs-${i}`) })
+                    });
+                    const d = await res.json().catch(()=>({}));
+                    if (res.status === 409 && d.detail?.duplicate) {
+                       toast(`Skipped duplicate: ${entry.title}`, 'in');
+                    } else if (!res.ok) {
+                       toast(`Error: ${entry.title}`, 'er');
+                    }
+                } catch(e) {}
+            }
+        }
+        ogBtn.innerHTML = originalHtml;
+        toast('Queued selected jobs!', 'ok');
+        sendQueuePage();
     }
 
     // ── Queue WebSocket ────────────────────────────────────────────────────────
@@ -1865,12 +2227,13 @@
         byteLabel = 'Saving to library…';
       } else if (st === 'done') {
         barWidth = '100%';
+        barClass += ' done';
         byteLabel = tot > 0 ? fmtBytes(tot) + ' — Complete!' : 'Complete!';
       } else if (st === 'error') {
         barWidth = '0%';
         byteLabel = '';
       }
-
+      
       return `
     <div class="bar-wrap"><div class="${barClass}" style="width:${barWidth}"></div></div>
     <div class="job-stats">
@@ -1937,6 +2300,168 @@
       if (card) { card.classList.add('fade-out'); setTimeout(() => card.remove(), 420); }
       queueJobs.delete(jid);
       renderQueueMeta();
+    }
+
+    // ── Zip Queue WebSocket & Rendering ─────────────────────────────────────────
+    function connectZipWs() {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      wsZip = new WebSocket(`${proto}://${location.host}/ws/zip_queue`);
+      wsZip.onopen = () => { sendZipPage(); };
+      wsZip.onmessage = e => {
+        try { handleZipMsg(JSON.parse(e.data)); } catch (_) { }
+      };
+      wsZip.onclose = () => { setTimeout(connectZipWs, 2000); };
+    }
+
+    function sendZipPage() {
+      if (wsZip?.readyState === 1)
+        wsZip.send(JSON.stringify({ page: zipPage, limit: QUEUE_PG }));
+    }
+
+    function handleZipMsg(data) {
+      if (data.type !== 'update') return;
+      zipTotal = data.total || 0;
+
+      (data.removed || []).forEach(jid => {
+        zipJobs.delete(jid);
+        const card = document.getElementById('zc-' + jid);
+        if (card) {
+          card.classList.add('fade-out');
+          setTimeout(() => card.remove(), 420);
+        }
+      });
+
+      (data.jobs || []).forEach(job => {
+        zipJobs.set(job.job_id, job);
+        const existing = document.getElementById('zc-' + job.job_id);
+        if (existing) {
+          updateZipCard(existing, job);
+        } else {
+          const card = makeZipCard(job);
+          insertZipCardSorted(card, job);
+        }
+      });
+
+      renderZipMeta();
+    }
+
+    function insertZipCardSorted(card, job) {
+      const list = document.getElementById('zip-queue-list');
+      const empty = list.querySelector('.empty');
+      if (empty) empty.remove();
+      const cards = list.querySelectorAll('.job-card');
+      let inserted = false;
+      for (const existing of cards) {
+        const existingJob = zipJobs.get(existing.id.slice(3));
+        if (existingJob && job.created_at && existingJob.created_at > job.created_at) {
+          list.insertBefore(card, existing);
+          inserted = true;
+          break;
+        }
+      }
+      if (!inserted) list.appendChild(card);
+    }
+
+    function renderZipMeta() {
+      const list = document.getElementById('zip-queue-list');
+      if (zipJobs.size === 0) {
+        if (!list.querySelector('.empty')) {
+          list.innerHTML = '<div class="empty"><div class="empty-icon">📦</div><div>No active zips</div></div>';
+        }
+      } else {
+        const empty = list.querySelector('.empty');
+        if (empty) empty.remove();
+      }
+
+      const totalPages = Math.max(1, Math.ceil(zipTotal / QUEUE_PG));
+      document.getElementById('zip-queue-count').textContent =
+        zipTotal > 0 ? `${zipTotal} job${zipTotal !== 1 ? 's' : ''}` : '';
+
+      const pager = document.getElementById('zip-queue-pager');
+      if (zipTotal > QUEUE_PG) {
+        pager.style.display = 'flex';
+        document.getElementById('zip-pager-info').textContent =
+          `Page ${zipPage + 1} / ${totalPages}`;
+        document.getElementById('zq-prev').disabled = zipPage === 0;
+        document.getElementById('zq-next').disabled = zipPage >= totalPages - 1;
+      } else {
+        pager.style.display = 'none';
+      }
+    }
+
+    function zipPrev() { if (zipPage > 0) { zipPage--; zipJobs.clear(); document.getElementById('zip-queue-list').innerHTML = ''; sendZipPage(); } }
+    function zipNext() { zipPage++; zipJobs.clear(); document.getElementById('zip-queue-list').innerHTML = ''; sendZipPage(); }
+
+    function makeZipCard(job) {
+      const div = document.createElement('div');
+      div.className = 'job-card';
+      div.id = 'zc-' + job.job_id;
+      renderZipCardContent(div, job);
+      return div;
+    }
+
+    function updateZipCard(el, job) {
+      renderZipCardContent(el, job);
+    }
+
+    function renderZipCardContent(el, job) {
+      const title = job.title || 'Zip Archive';
+      const thumb = '<div class="job-thumb-ph">📦</div>';
+      
+      let badge = '';
+      let barClass = 'bar-fill';
+      let barWidth = '0%';
+      let byteLabel = '';
+
+      if (job.status === 'done') {
+        badge = '<span class="phase-pill ph-done">READY</span>';
+        barClass += ' done';
+        barWidth = '100%';
+        byteLabel = 'Zip Complete!';
+      } else if (job.status === 'zipping') {
+        badge = '<span class="phase-pill ph-dl">ZIPPING</span>';
+        barClass += ' indeterminate';
+        barWidth = '100%';
+        byteLabel = 'Zipping files... ' + Math.floor(job.percent || 0) + '%';
+      } else if (job.status === 'error') {
+        badge = '<span class="phase-pill ph-err">ERROR</span>';
+      } else {
+        badge = '<span class="phase-pill ph-queued">' + (job.status ? job.status.toUpperCase() : 'QUEUED') + '</span>';
+        byteLabel = 'Waiting...';
+      }
+
+      let actions = '';
+      if (job.status === 'done' && job.zip_path) {
+          actions = `<a href="/api/zip_jobs/${job.job_id}/download" target="_blank"><button class="btn-xs btn-p">⬇ Download Zip</button></a>
+                     <button class="btn-xs btn-ghost" onclick="cancelZipJob('${job.job_id}')" style="margin-left:0.3rem;">✕ Dismiss</button>`;
+      } else if (job.status === 'error') {
+          actions = `<button class="btn-xs btn-red" onclick="cancelZipJob('${job.job_id}')">✕ Dismiss</button>
+                 <span class="err-msg" title="${esc(job.error_msg || '')}" style="margin-left:0.3rem;">${esc((job.error_msg || 'Unknown error').slice(0, 80))}</span>`;
+      } else if (job.status !== 'done') {
+          actions = `<button class="btn-xs btn-red" onclick="cancelZipJob('${job.job_id}')">✕ Cancel</button>`;
+      }
+
+      el.innerHTML = `
+      ${thumb}
+      <div class="job-body">
+        <div class="job-top">
+          <span class="job-title" title="${esc(title)}">${esc(title)}</span>
+          ${badge}
+        </div>
+        <div class="bar-wrap"><div class="${barClass}" style="width:${barWidth}"></div></div>
+        <div class="job-stats"><span class="stat-bytes">${esc(byteLabel)}</span></div>
+        <div class="job-actions" style="margin-top:0.4rem;">${actions}</div>
+      </div>`;
+    }
+
+    async function cancelZipJob(jid) {
+      try {
+        await fetch('/api/zip_jobs/' + jid, { method: 'DELETE' });
+      } catch(e) {}
+      zipJobs.delete(jid);
+      const card = document.getElementById('zc-' + jid);
+      if (card) { card.classList.add('fade-out'); setTimeout(() => card.remove(), 420); }
+      renderZipMeta();
     }
 
     // ── Folder picker ──────────────────────────────────────────────────────────
@@ -2039,13 +2564,46 @@
       libMode = m;
       document.getElementById('lt-audio').classList.toggle('on', m === 'audio');
       document.getElementById('lt-video').classList.toggle('on', m === 'video');
+      loadSubLangsFilter();
       loadMedia(true);
     }
     function applyFilters() { loadMedia(true); }
+    
+    async function downloadAllFiltered() {
+       const confirm = await showConfirm(
+          'Background Zip Archive',
+          'Are you sure you want to zip all currently filtered items?\nThis process will run in the background queue. When finished, you can save the Zip file from the queue panel.',
+          { icon: '📦', okLabel: 'Yes, Start Zipping', okClass: 'btn-p' }
+       );
+       if (!confirm) return;
+
+       toast('Queueing Zip Job...', 'in');
+       try {
+           const p = buildParams(0);
+           const payload = Object.fromEntries(p.entries());
+           
+           const res = await fetch('/api/zip_jobs', {
+               method: 'POST',
+               headers: { 'Content-Type': 'application/json' },
+               body: JSON.stringify(payload)
+           });
+           
+           if (!res.ok) {
+               const data = await res.json().catch(()=>({}));
+               throw new Error(data.detail || 'Failed to queue job');
+           }
+           
+           toast('Zip Job Started!', 'ok');
+           sendZipPage(); // jump start queue refreshing if needed
+       } catch (e) {
+           toast('Error tracking zip process: ' + e.message, 'er');
+       }
+    }
+
     function clearFilters() {
-      ['f-channel', 'f-dur-min', 'f-dur-max', 'f-views', 'f-likes', 'f-tags'].forEach(id => {
+      ['f-channel', 'f-sub-lang', 'f-dur-min', 'f-dur-max', 'f-views', 'f-likes', 'f-tags'].forEach(id => {
         const el = document.getElementById(id);
-        el.value = '';
+        if (el) el.value = '';
       });
       loadMedia(true);
     }
@@ -2063,12 +2621,14 @@
         order: libOrder, limit: LIB_LIMIT, offset: off,
       });
       const ch = document.getElementById('f-channel').value;
+      const subL = document.getElementById('f-sub-lang').value;
       const durMn = document.getElementById('f-dur-min').value;
       const durMx = document.getElementById('f-dur-max').value;
       const views = document.getElementById('f-views').value;
       const likes = document.getElementById('f-likes').value;
       const tags = document.getElementById('f-tags').value.trim();
       if (ch) p.set('channel_id', ch);
+      if (subL) p.set('sub_lang', subL);
       if (durMn) p.set('min_duration', parseInt(durMn) * 60);
       if (durMx) p.set('max_duration', parseInt(durMx) * 60);
       if (views) p.set('min_views', views);
@@ -2121,6 +2681,7 @@
         <a href="${esc(dlUrl)}" download="${esc(item.file_name || '')}">
           <button class="btn-xs btn-ghost">⬇ Save</button>
         </a>
+        <button class="btn-xs btn-ghost" onclick="readTranscript(${item.id})">📝 Transcript</button>
         <button class="btn-xs btn-red" onclick="deleteMedia(${item.id})">✕ Delete</button>
       </div>
     </div>`;
@@ -2138,6 +2699,46 @@
       if (res.ok) { document.getElementById('mc-' + id)?.remove(); toast('Deleted', 'ok'); }
     }
 
+    // ── Transcript functions ───────────────────────────────────────────────────
+    let currentTranscripts = [];
+    async function readTranscript(id) {
+       try {
+           const res = await fetch(`/api/media/${id}/transcripts`);
+           const data = await res.json();
+           if (!res.ok) throw new Error(data.detail || 'Failed to fetch transcripts');
+           if (!data || data.length === 0) {
+               toast('No transcripts available for this media', 'er');
+               return;
+           }
+           currentTranscripts = data;
+           renderTranscriptModal(0);
+       } catch (e) {
+           toast('Error: ' + e.message, 'er');
+       }
+    }
+
+    function renderTranscriptModal(idx) {
+       const modal = document.getElementById('transcript-modal');
+       const tabs = document.getElementById('tr-lang-tabs');
+       const body = document.getElementById('tr-body');
+       
+       tabs.innerHTML = '';
+       currentTranscripts.forEach((tr, i) => {
+           const btn = document.createElement('button');
+           btn.className = 'btn-xs ' + (i === idx ? 'btn-p' : 'btn-ghost');
+           btn.textContent = tr.language;
+           btn.onclick = () => renderTranscriptModal(i);
+           tabs.appendChild(btn);
+       });
+       
+       body.textContent = currentTranscripts[idx]?.text || '';
+       modal.classList.add('on');
+    }
+
+    function closeTranscriptModal() {
+       document.getElementById('transcript-modal').classList.remove('on');
+    }
+
     async function loadChannels() {
       try {
         const channels = await (await fetch('/api/channels')).json();
@@ -2149,13 +2750,40 @@
       } catch (_) { }
     }
 
+    async function loadSubLangsFilter() {
+      try {
+        const langs = await (await fetch('/api/sub_langs?mode=' + libMode)).json();
+        const sel = document.getElementById('f-sub-lang');
+        const cur = sel.value;
+        const disp = new Intl.DisplayNames(['en'], { type: 'language' });
+        sel.innerHTML = '<option value="">All languages</option>' +
+          langs.map(l => {
+              let name = l;
+              try { name = disp.of(l) || l; } catch(e){}
+              return `<option value="${l}">${esc(name)} (${l})</option>`;
+          }).join('');
+        sel.value = cur;
+      } catch (_) { }
+    }
+
+    function openFilterModal() { document.getElementById('filter-modal').style.display = 'flex'; }
+    function closeFilterModal() { document.getElementById('filter-modal').style.display = 'none'; }
+
     // Enter key
     document.getElementById('url-input').addEventListener('keydown', e => {
-      if (e.key === 'Enter') startDownload();
+      if (e.key === 'Enter') {
+          const dlBtn = document.getElementById('dl-btn');
+          if (dlBtn && dlBtn.style.display !== 'none') {
+             dlBtn.click();
+          } else {
+             fetchInfo();
+          }
+      }
     });
 
     // Boot
     connectQueueWs();
+    connectZipWs();
     loadChannels();
     loadMedia(true);
   </script>

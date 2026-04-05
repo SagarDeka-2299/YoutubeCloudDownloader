@@ -117,3 +117,60 @@ After modifying the file, run `docker compose down` and `docker compose up -d` f
 | `AUDIO_DIR`      | `downloads/audio` | Audio download root |
 | `VIDEO_DIR`      | `downloads/video` | Video download root |
 | `MAX_CONCURRENT` | `3`               | Max simultaneous downloads |
+
+
+
+---
+
+
+
+Your app actually already has the underlying code ready to bypass bot detection! 
+
+I looked at your codebase, and `yt-dlp` is already configured to accept a **`cookies.txt`** file, and your `docker-compose.yml` has the setup commented out. 
+
+YouTube's bot detection primarily blocks requests that come from unauthenticated, server-side data-center IPs. By providing cookies from a logged-in (and trusted) normal web browser, `yt-dlp` makes its requests look identical to you browsing YouTube normally.
+
+Here is exactly how to enable it in your app:
+
+### Step 1: Export your YouTube Cookies
+You need to export your browser cookies while logged into YouTube.
+1. Install a "Get cookies.txt locally" extension for your browser (e.g., [Get cookies.txt LOCALLY for Chrome](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdnnchhlhlbg)).
+2. Go to [youtube.com](https://www.youtube.com/) and make sure you are logged in (you can use a burner account if you prefer, but a real account you actively use is less likely to be flagged).
+3. Click the extension icon and export your cookies.
+4. Save the downloaded file as `cookies.txt` into the root of your `youtube_video_downloader` folder (right next to your `docker-compose.yml`).
+
+> [!CAUTION]
+> Your `cookies.txt` contains your session data. Do not commit this file to GitHub or share it with anyone! (It is already safely ignored in your `.gitignore`, but just as a warning.)
+
+### Step 2: Update your `docker-compose.yml`
+Uncomment the cookie lines in your `docker-compose.yml` so that Docker passes the file into the container.
+
+In your `docker-compose.yml`, change the `volumes:` section to mount the file:
+```yaml
+    volumes:
+      - ./data:/app/data
+      - ./downloads/audio:/app/audio
+      - ./downloads/video:/app/video
+      - ./cookies.txt:/app/cookies.txt:ro
+```
+
+And in the `environment:` section, uncomment the env var:
+```yaml
+    environment:
+      DATA_DIR:       /app/data
+      AUDIO_DIR:      /app/audio
+      VIDEO_DIR:      /app/video
+      MAX_CONCURRENT: "3"
+      COOKIES_FILE:   /app/cookies.txt
+```
+
+### Step 3: Restart the container
+Run the following to restart the container with the newly mapped cookies file:
+```bash
+docker-compose down
+docker-compose up -d
+```
+
+### Why this works:
+1. **Cookies:** Makes you appear as an authenticated user who has solved CAPTCHAs implicitly.
+2. **Player Clients:** Notice in `main.py` lines 208-210, your code is already instructing `yt-dlp` to pretend to be an `android` and `web` player client. These clients combined with valid cookies are currently the most robust way to avoid the "Sign in to confirm you're not a bot" error.

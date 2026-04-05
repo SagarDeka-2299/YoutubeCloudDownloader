@@ -4,17 +4,19 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./data:/app/data
-      - ./downloads/audio:/app/audio
-      - ./downloads/video:/app/video
+      - ./data:${DATA_DIR:-/app/data}
+      - ./downloads/audio:${AUDIO_DIR:-/app/audio}
+      - ./downloads/video:${VIDEO_DIR:-/app/video}
+      - ./downloads/zips:${ZIP_DIR:-/app/zips}
       # Optional: export cookies from your browser and place at ./cookies.txt
       # Then uncomment the line below to bypass YouTube bot detection:
-      # - ./cookies.txt:/app/cookies.txt:ro
+      - ./cookies.txt:${COOKIES_FILE:-/app/cookies.txt}:ro
     environment:
-      DATA_DIR:       /app/data
-      AUDIO_DIR:      /app/audio
-      VIDEO_DIR:      /app/video
-      MAX_CONCURRENT: "3"
+      DATA_DIR:       ${DATA_DIR:-/app/data}
+      AUDIO_DIR:      ${AUDIO_DIR:-/app/audio}
+      VIDEO_DIR:      ${VIDEO_DIR:-/app/video}
+      ZIP_DIR:        ${ZIP_DIR:-/app/zips}
+      MAX_CONCURRENT: "${MAX_CONCURRENT:-3}"
       # Uncomment after mounting cookies.txt above:
-      # COOKIES_FILE:   /app/cookies.txt
+      COOKIES_FILE:   ${COOKIES_FILE:-/app/cookies.txt}
     restart: unless-stopped
