@@ -769,7 +769,7 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
                 detail="Preview ready",
                 error_msg="",
             )
-            threading.Timer(0.8, db.inquiry_delete, args=(inquiry_id,)).start()
+            threading.Timer(6.0, db.inquiry_delete, args=(inquiry_id,)).start()
             return
 
         entries = [e for e in list(info.get("entries") or []) if _is_supported_playlist_entry(e)]
@@ -798,7 +798,7 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
             cached = cached_items.get(entry_url)
             if cached:
                 cached["playlist_index"] = idx
-                if _preview_item_is_fresh_today(cached):
+                if _preview_item_is_fresh_24h(cached):
                     db.upsert_preview_item(url, cached)
                 else:
                     try:
@@ -838,7 +838,7 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
             detail="Preview ready",
             error_msg="",
         )
-        threading.Timer(0.8, db.inquiry_delete, args=(inquiry_id,)).start()
+        threading.Timer(6.0, db.inquiry_delete, args=(inquiry_id,)).start()
     except Exception as exc:
         db.inquiry_update(
             inquiry_id,
@@ -847,17 +847,18 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
             detail="Inquiry failed",
             error_msg=str(exc),
         )
-        threading.Timer(0.8, db.inquiry_delete, args=(inquiry_id,)).start()
+        threading.Timer(6.0, db.inquiry_delete, args=(inquiry_id,)).start()
 
 
-def _preview_item_is_fresh_today(item: dict[str, Any] | None) -> bool:
+def _preview_item_is_fresh_24h(item: dict[str, Any] | None) -> bool:
     if not item:
         return False
     updated_at = str(item.get("updated_at") or "").strip()
     if not updated_at:
         return False
     try:
-        return datetime.fromisoformat(updated_at.replace(" ", "T")).date() == datetime.now().date()
+        updated_dt = datetime.fromisoformat(updated_at.replace(" ", "T"))
+        return (datetime.now() - updated_dt).total_seconds() <= 24 * 3600
     except ValueError:
         return False
 

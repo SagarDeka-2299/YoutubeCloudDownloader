@@ -2925,15 +2925,6 @@
           applyInquirySelection(inquiry, false);
           fetchPreviewPage();
         }
-        if (inquiry.status === 'done' || inquiry.status === 'error' || inquiry.status === 'cancelled') {
-          inquiryJobs.delete(inquiry.inquiry_id);
-          const existing = document.getElementById('iqc-' + inquiry.inquiry_id);
-          if (existing) {
-            existing.classList.add('fade-out');
-            setTimeout(() => existing.remove(), 420);
-          }
-          return;
-        }
         inquiryJobs.set(inquiry.inquiry_id, inquiry);
         const existing = document.getElementById('iqc-' + inquiry.inquiry_id);
         if (existing) updateInquiryCard(existing, inquiry);
