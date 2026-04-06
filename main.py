@@ -238,6 +238,80 @@ def _record_has_media_on_disk(record: dict | None) -> bool:
     return primary.exists()
 
 
+def _canonical_job_key(url: str) -> str:
+    return _canonical_video_url(url) or str(url or "").strip()
+
+
+def _find_pending_duplicate(url: str, *, exclude_job_id: str | None = None) -> dict | None:
+    key = _canonical_job_key(url)
+    if not key:
+        return None
+
+    for job in list(_jobs.values()):
+        if _canonical_job_key(job.source_url) == key:
+            return {
+                "duplicate": True,
+                "source": "memory",
+                "job_id": job.job_id,
+                "url": job.source_url,
+                "title": "",
+                "status": "queued",
+            }
+
+    for row in db.queue_all():
+        status = str(row.get("status") or "").strip().lower()
+        if status in {"done", "cancelled"}:
+            continue
+        if exclude_job_id and str(row.get("job_id") or "") == exclude_job_id:
+            continue
+        if _canonical_job_key(str(row.get("url") or "")) == key:
+            row["duplicate"] = True
+            row["source"] = "queue"
+            return row
+
+    with _inquiry_retry_lock:
+        for batch in _inquiry_retry_batches.values():
+            item = batch.get(key)
+            if item:
+                return {
+                    "duplicate": True,
+                    "source": "retry",
+                    "job_id": item.get("job_id") or "",
+                    "url": item.get("source_url") or key,
+                    "title": "",
+                    "status": "retry_wait",
+                }
+    return None
+
+
+def _cleanup_duplicate_download_outputs(existing: dict, primary_path: Path, downloads: list[dict]) -> None:
+    keep: set[str] = set()
+    for desired_mode in ("audio", "video"):
+        fp = _find_variant_abspath(existing, desired_mode)
+        if fp and fp.exists():
+            keep.add(str(fp.resolve()))
+
+    cleanup_paths: set[str] = set()
+    if primary_path and primary_path.exists():
+        cleanup_paths.add(str(primary_path.resolve()))
+    for dl in downloads or []:
+        for raw in (dl.get("filepath"), dl.get("filename")):
+            if not raw:
+                continue
+            p = Path(raw).resolve()
+            if p.exists():
+                cleanup_paths.add(str(p))
+
+    for raw in cleanup_paths:
+        if raw in keep:
+            continue
+        try:
+            Path(raw).unlink(missing_ok=True)
+            log("🧹", f"Removed duplicate output: {raw}")
+        except Exception as exc:
+            log("⚠️", f"Could not remove duplicate output {raw}: {exc}")
+
+
 def _ensure_file_in_mode_folder(path: Path, mode: str, target_subdir: str = "") -> Path:
     base = _base_dir_for_mode(mode).resolve()
     target_dir = (base / target_subdir.strip("/")).resolve() if target_subdir else base
@@ -380,6 +454,17 @@ class _SaveToDB(yt_dlp.postprocessor.PostProcessor):
                 _ensure_file_in_mode_folder(p, "video", target_subdir)
             elif side_mode == "audio":
                 _ensure_file_in_mode_folder(p, "audio", target_subdir)
+
+        youtube_id = str(info.get("id") or "").strip()
+        if youtube_id:
+            existing = db.get_media_by_youtube_id(youtube_id)
+            if existing and _record_has_media_on_disk(existing):
+                existing_primary = _find_variant_abspath(existing, stored_mode) or _resolve_media_abspath(existing)
+                if existing_primary.exists() and final_obj and final_obj.exists():
+                    if str(existing_primary.resolve()) != str(final_obj.resolve()):
+                        log("⚠️", f"[{job_short}] Duplicate completed download detected for youtube_id={youtube_id}; keeping existing media")
+                        _cleanup_duplicate_download_outputs(existing, final_obj, downloads)
+                        return [], info
 
         # Get actual size from disk if not provided
         if not final_size and final_path and Path(final_path).exists():
@@ -547,6 +632,7 @@ def _queue_retry_item(job: DownloadJob, error_msg: str) -> None:
     with _inquiry_retry_lock:
         batch = _inquiry_retry_batches.setdefault(job.inquiry_id, {})
         batch[key] = {
+            "job_id": job.job_id,
             "source_url": key,
             "mode": job.mode,
             "quality": job.quality,
@@ -585,7 +671,7 @@ async def _process_inquiry_retries() -> None:
 
             for item in due_items:
                 try:
-                    await _enqueue_job(
+                    job_id, existing = await _enqueue_job(
                         loop=loop,
                         url=item["source_url"],
                         mode=item.get("mode") or "audio",
@@ -593,7 +679,10 @@ async def _process_inquiry_retries() -> None:
                         subtitles=item.get("subtitles") or [],
                         inquiry_id=item.get("inquiry_id"),
                         retry_attempt=int(item.get("retry_attempt") or 1),
+                        existing_job_id=str(item.get("job_id") or "").strip() or None,
                     )
+                    if existing and item.get("job_id"):
+                        await loop.run_in_executor(None, db.queue_delete, item["job_id"])
                 except Exception as exc:
                     log("❌", f"Retry enqueue failed for inquiry {item.get('inquiry_id')}: {exc}")
         except asyncio.CancelledError:
@@ -757,9 +846,8 @@ async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
             )
             log("🔁", f"[{job_short}] {retry_msg}")
             _queue_retry_item(job, error)
-            job.push({"phase": "queued", "message": retry_msg})
-            db.queue_update(job.job_id, status="queued", error_msg=retry_msg)
-            await loop.run_in_executor(None, db.queue_delete, job.job_id)
+            job.push({"phase": "error", "message": retry_msg})
+            db.queue_update(job.job_id, status="retry_wait", error_msg=retry_msg)
             _jobs.pop(job.job_id, None)
         else:
             job.push({"phase": "error", "message": error})
@@ -794,7 +882,7 @@ async def _startup() -> None:
     # Mark orphaned active rows as error (server was killed mid-download)
     rows, _ = db.queue_list(0, 9999)
     for row in rows:
-        if row.get("status") in ("downloading", "converting", "saving", "queued"):
+        if row.get("status") in ("downloading", "converting", "saving", "queued", "retry_wait"):
             log("⚠️", f"Orphaned queue row {row['job_id'][:8]} status={row['status']} → error")
             db.queue_update(row["job_id"], status="error",
                             error_msg="Server restarted — download was interrupted")
@@ -1031,7 +1119,6 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
                 detail="Preview loaded from cache",
                 error_msg="",
             )
-            threading.Timer(6.0, db.inquiry_delete, args=(inquiry_id,)).start()
             return
 
         try:
@@ -1085,7 +1172,6 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
                 detail="Preview ready",
                 error_msg="",
             )
-            threading.Timer(6.0, db.inquiry_delete, args=(inquiry_id,)).start()
             return
 
         entries = [e for e in list(info.get("entries") or []) if _is_supported_playlist_entry(e)]
@@ -1170,7 +1256,6 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
             detail="Preview ready",
             error_msg="",
         )
-        threading.Timer(6.0, db.inquiry_delete, args=(inquiry_id,)).start()
     except Exception as exc:
         db.inquiry_update(
             inquiry_id,
@@ -1179,7 +1264,6 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
             detail=str(exc)[:220] or "Inquiry failed",
             error_msg=str(exc),
         )
-        threading.Timer(6.0, db.inquiry_delete, args=(inquiry_id,)).start()
 
 
 def _preview_item_is_fresh_24h(item: dict[str, Any] | None) -> bool:
@@ -1508,6 +1592,7 @@ async def _enqueue_job(
     subtitles: list[str] | None,
     inquiry_id: str | None = None,
     retry_attempt: int = 1,
+    existing_job_id: str | None = None,
 ) -> tuple[str | None, dict | None]:
     y_id = extract_youtube_id(url)
     if y_id:
@@ -1516,7 +1601,12 @@ async def _enqueue_job(
             log("⚠️", f"Duplicate detected: youtube_id={y_id}")
             return None, existing
 
-    job_id = str(uuid4())
+    pending = await loop.run_in_executor(None, lambda: _find_pending_duplicate(url, exclude_job_id=existing_job_id))
+    if pending:
+        log("⚠️", f"Duplicate detected in pending queue: {url[:80]}")
+        return None, pending
+
+    job_id = existing_job_id or str(uuid4())
     normalized_mode = "audio"
     normalized_subs = _normalize_subtitles(subtitles)
     job = DownloadJob(
@@ -1530,9 +1620,20 @@ async def _enqueue_job(
     )
     _jobs[job_id] = job
 
-    await loop.run_in_executor(
-        None, db.queue_insert, job_id, url, normalized_mode, quality, ""
-    )
+    if existing_job_id:
+        await loop.run_in_executor(
+            None, db.queue_update, job_id,
+            status="queued",
+            downloaded_bytes=0,
+            total_bytes=0,
+            speed_bps=0,
+            eta_seconds=0,
+            error_msg="",
+        )
+    else:
+        await loop.run_in_executor(
+            None, db.queue_insert, job_id, url, normalized_mode, quality, ""
+        )
     log("✅", f"Job {job_id[:8]} inserted into queue")
     asyncio.create_task(
         _run_job(job, url, normalized_mode, quality, normalized_subs)

@@ -2205,6 +2205,8 @@
         const res = await fetch(`/api/inquiries/${encodeURIComponent(inquiryId)}`);
         const inquiry = await res.json();
         if (!res.ok) throw new Error(inquiry.detail || 'Failed to load inquiry');
+        document.getElementById('url-input').value = inquiry.source_url || '';
+        lastFetchedUrl = inquiry.source_url || '';
         applyInquirySelection(inquiry, true);
         if (inquiry.status === 'done') await fetchPreviewPage();
       } catch (e) {
@@ -2348,6 +2350,13 @@
           if (data.queued) toast(`Queued ${data.queued} jobs`, 'ok');
           else toast('No new jobs queued', 'in');
           if (data.skipped_duplicates) toast(`Skipped ${data.skipped_duplicates} duplicates`, 'in');
+          if (currentInquiryId && currentInquiryStatus === 'done') {
+            const doneInquiryId = currentInquiryId;
+            currentInquiryId = '';
+            currentInquiryStatus = '';
+            syncDownloadButton();
+            deleteInquiry(doneInquiryId, { clearSelection: false });
+          }
           sendQueuePage();
         } catch (e) {
           toast('Error: ' + e.message, 'er');
@@ -2415,18 +2424,9 @@
         }
         queueJobs.set(job.job_id, job);
         const existing = document.getElementById('jc-' + job.job_id);
-
-        // Auto-dismiss errors: show toast + remove card
-        if (job.status === 'error' && prev?.status !== 'error') {
+        if ((job.status === 'error' || job.status === 'retry_wait') && prev?.status !== job.status) {
           const msg = job.error_msg || job.url || 'Download failed';
           toast('❌ ' + (msg.replace(/^ERROR:\s*/i, '').slice(0, 100)), 'er');
-          _autoDismissJob(job.job_id);
-          return;
-        }
-        // Also auto-dismiss if it arrived already in error state (e.g. page reload)
-        if (job.status === 'error' && !existing) {
-          _autoDismissJob(job.job_id);
-          return;
         }
 
         if (existing) {
@@ -2474,16 +2474,6 @@
       if (!inserted) list.appendChild(card);
     }
 
-    // Auto-dismiss an error job: remove from DB + UI silently
-    function _autoDismissJob(jid) {
-      queueJobs.delete(jid);
-      const card = document.getElementById('jc-' + jid);
-      if (card) { card.classList.add('fade-out'); setTimeout(() => card.remove(), 420); }
-      // Tell server to delete the row
-      fetch('/api/jobs/' + jid, { method: 'DELETE' }).catch(() => {});
-      renderQueueMeta();
-    }
-
     function renderQueueMeta() {
       const list = document.getElementById('queue-list');
       if (queueJobs.size === 0) {
@@ -2521,6 +2511,7 @@
         downloading: ['ph-dl', 'DOWNLOADING'],
         converting: ['ph-cv', mode === 'video' ? 'MERGING' : 'CONVERTING'],
         saving: ['ph-sv', 'SAVING'],
+        retry_wait: ['ph-err', 'RETRY WAIT'],
         done: ['ph-done', 'COMPLETE ✓'],
         error: ['ph-err', 'ERROR'],
         cancelled: ['ph-cancel', 'CANCELLED'],
@@ -2543,6 +2534,8 @@
 
       if (st === 'queued') {
         byteLabel = 'Waiting for download slot…';
+      } else if (st === 'retry_wait') {
+        byteLabel = job.error_msg || 'Waiting to retry when queue is empty…';
       } else if (st === 'downloading') {
         if (tot > 0) {
           const pct = Math.min(100, (dl / tot) * 100);
@@ -2571,7 +2564,7 @@
         byteLabel = tot > 0 ? fmtBytes(tot) + ' — Complete!' : 'Complete!';
       } else if (st === 'error') {
         barWidth = '0%';
-        byteLabel = '';
+        byteLabel = job.error_msg || 'Download failed';
       }
       
       return `
@@ -2604,6 +2597,9 @@
       if (job.status === 'error') {
         actions = `<button class="btn-xs btn-red" onclick="dismissJob('${job.job_id}')">✕ Dismiss</button>
                <span class="err-msg" title="${esc(job.error_msg || '')}">${esc((job.error_msg || 'Unknown error').slice(0, 80))}</span>`;
+      } else if (job.status === 'retry_wait') {
+        actions = `<button class="btn-xs btn-red" onclick="cancelJob('${job.job_id}')">✕ Cancel Retry</button>
+               <span class="err-msg" title="${esc(job.error_msg || '')}">${esc((job.error_msg || 'Retry pending').slice(0, 80))}</span>`;
       } else if (job.status !== 'done' && job.status !== 'cancelled') {
         actions = `<button class="btn-xs btn-red" onclick="cancelJob('${job.job_id}')">✕ Cancel</button>`;
       }
@@ -2849,11 +2845,14 @@
       const barWidth = inquiry.status === 'done' ? '100%' : `${pct}%`;
       const title = inquiry.title || inquiry.source_url || 'Inquiry';
       const detail = inquiry.detail || (inquiry.status === 'done' ? 'Preview ready' : 'Working…');
+      const openBtn = inquiry.status === 'done'
+        ? `<button class="btn-xs btn-ghost" onclick="event.stopPropagation(); selectInquiry('${inquiry.inquiry_id}')">Open</button>`
+        : '';
       const actions = `
-        <button class="btn-xs btn-ghost" onclick="event.stopPropagation(); selectInquiry('${inquiry.inquiry_id}')">Open</button>
+        ${openBtn}
         <button class="btn-xs btn-red" onclick="event.stopPropagation(); deleteInquiry('${inquiry.inquiry_id}')">✕</button>`;
       el.style.borderColor = active ? 'rgba(168,85,247,.45)' : 'var(--b1)';
-      el.onclick = () => selectInquiry(inquiry.inquiry_id);
+      el.onclick = inquiry.status === 'done' ? () => selectInquiry(inquiry.inquiry_id) : null;
       el.innerHTML = `
         <div class="job-thumb-ph">🧾</div>
         <div class="job-body">
@@ -2867,14 +2866,19 @@
             ${total ? `<span class="stat-track">${processed}/${total}</span>` : ''}
           </div>
           <div class="job-actions">${actions}</div>
-        </div>`;
+      </div>`;
     }
 
-    async function deleteInquiry(inquiryId) {
+    async function deleteInquiry(inquiryId, { clearSelection = true } = {}) {
       try { await fetch(`/api/inquiries/${encodeURIComponent(inquiryId)}`, { method: 'DELETE' }); } catch (_) {}
       inquiryJobs.delete(inquiryId);
       const card = document.getElementById('iqc-' + inquiryId);
       if (card) { card.classList.add('fade-out'); setTimeout(() => card.remove(), 420); }
+      if (clearSelection && currentInquiryId === inquiryId) {
+        currentInquiryId = '';
+        currentInquiryStatus = '';
+        syncDownloadButton();
+      }
       renderInquiryMeta();
     }
 

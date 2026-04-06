@@ -736,6 +736,12 @@ def queue_get(job_id: str) -> dict | None:
         return dict(row) if row else None
 
 
+def queue_all() -> list[dict]:
+    with _conn() as c:
+        rows = c.execute("SELECT * FROM queue ORDER BY created_at ASC").fetchall()
+        return [dict(r) for r in rows]
+
+
 def queue_list(page: int = 0, limit: int = 10) -> tuple[list[dict], int]:
     with _conn() as c:
         total = c.execute("SELECT COUNT(*) FROM queue").fetchone()[0]
