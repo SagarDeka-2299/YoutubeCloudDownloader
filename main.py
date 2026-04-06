@@ -4,7 +4,6 @@ main.py – YTGrab backend
 from __future__ import annotations
 
 import asyncio
-import functools
 import os
 import re
 import shutil
@@ -28,7 +27,7 @@ from threading import Lock
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-DOWNLOAD_RETRY_DELAYS = [5, 5, 5, 10, 10, 30, 30, 60, 60, 100, 200]
+DOWNLOAD_RETRY_DELAYS = [5, 10, 30, 60, 100, 500, 1000, 3600]
 
 
 # ── Logging helper ─────────────────────────────────────────────────────────────
@@ -397,8 +396,11 @@ async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
 
         opts["progress_hooks"] = [_progress_hook]
 
+        last_rate_limited = False
+
         def _run() -> str | None:
             """Returns None on success, '__cancelled__' on cancel, or error string."""
+            nonlocal last_rate_limited
             log("▶️", f"[{job_short}] _run() entering yt_dlp.YoutubeDL")
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
@@ -421,6 +423,7 @@ async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
                 if "__ytgrab_cancel__" in msg or _cancelled[0] or job.cancel_event.is_set():
                     log("🚫", f"[{job_short}] Cancelled by user")
                     return "__cancelled__"
+                last_rate_limited = _is_rate_limited_exception(exc, msg)
                 log("❌", f"[{job_short}] Exception in _run: {exc}")
                 import traceback
                 traceback.print_exc()
@@ -440,7 +443,7 @@ async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
             log("🏁", f"[{job_short}] run_in_executor returned — error={error!r} attempt={attempt_index + 1}")
             if not error or error == "__cancelled__":
                 break
-            if _is_rate_limited_error(error):
+            if last_rate_limited:
                 log("⏸️", f"[{job_short}] YouTube rate limit detected. Stopping retries for this item.")
                 break
             if attempt_index >= len(DOWNLOAD_RETRY_DELAYS):
@@ -471,7 +474,6 @@ async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
                     log("⚠️", f"[{job_short}] Could not remove {pattern}: {e}")
         job.push({"phase": "cancelled"})
         db.queue_update(job.job_id, status="cancelled")
-        await asyncio.sleep(2)
         await loop.run_in_executor(None, db.queue_delete, job.job_id)
         _jobs.pop(job.job_id, None)
         log("🚫", f"[{job_short}] Cancel cleanup done")
@@ -487,8 +489,6 @@ async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
         log("🎉", f"[{job_short}] Job completed successfully!")
         job.push({"phase": "done"})
         db.queue_update(job.job_id, status="done")
-        # Keep visible for 5 s so UI can flash green
-        await asyncio.sleep(5)
         await loop.run_in_executor(None, db.queue_delete, job.job_id)
         _jobs.pop(job.job_id, None)
         log("✨", f"[{job_short}] Queue row cleaned up")
@@ -769,7 +769,7 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
                 detail="Preview ready",
                 error_msg="",
             )
-            threading.Timer(2.0, db.inquiry_delete, args=(inquiry_id,)).start()
+            threading.Timer(0.8, db.inquiry_delete, args=(inquiry_id,)).start()
             return
 
         entries = [e for e in list(info.get("entries") or []) if _is_supported_playlist_entry(e)]
@@ -838,7 +838,7 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
             detail="Preview ready",
             error_msg="",
         )
-        threading.Timer(2.0, db.inquiry_delete, args=(inquiry_id,)).start()
+        threading.Timer(0.8, db.inquiry_delete, args=(inquiry_id,)).start()
     except Exception as exc:
         db.inquiry_update(
             inquiry_id,
@@ -847,6 +847,7 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
             detail="Inquiry failed",
             error_msg=str(exc),
         )
+        threading.Timer(0.8, db.inquiry_delete, args=(inquiry_id,)).start()
 
 
 def _preview_item_is_fresh_today(item: dict[str, Any] | None) -> bool:
@@ -861,7 +862,24 @@ def _preview_item_is_fresh_today(item: dict[str, Any] | None) -> bool:
         return False
 
 
-def _is_rate_limited_error(message: str) -> bool:
+def _is_rate_limited_exception(exc: Exception, message: str) -> bool:
+    # Prefer concrete HTTP/status codes from the exception chain.
+    for obj in (exc, getattr(exc, "cause", None), getattr(exc, "exc", None), getattr(exc, "response", None)):
+        if obj is None:
+            continue
+        for attr in ("status", "status_code", "code"):
+            code = getattr(obj, attr, None)
+            if isinstance(code, int) and code == 429:
+                return True
+    exc_info = getattr(exc, "exc_info", None)
+    if isinstance(exc_info, tuple) and len(exc_info) >= 2 and exc_info[1] is not None:
+        inner = exc_info[1]
+        for attr in ("status", "status_code", "code"):
+            code = getattr(inner, attr, None)
+            if isinstance(code, int) and code == 429:
+                return True
+
+    # Fallback for yt-dlp paths that only provide text.
     msg = (message or "").lower()
     return (
         "rate-limited by youtube" in msg

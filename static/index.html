@@ -1631,7 +1631,7 @@
     // ── State ──────────────────────────────────────────────────────────────────
     let dlMode = 'audio', quality = 'best', targetPath = '';
     let libMode = 'audio', libOrder = 'desc', libPage = 0, libTotal = 0;
-    const LIB_LIMIT = 30, QUEUE_PG = 5;
+    const LIB_LIMIT = 5, QUEUE_PG = 5;
     let queuePage = 0, queueTotal = 0;
     let queueWs = null;
     let wsZip = null;
@@ -2558,6 +2558,15 @@
       // Process updates / new jobs
       (data.jobs || []).forEach(job => {
         const prev = queueJobs.get(job.job_id);
+        if (job.status === 'done' || job.status === 'cancelled') {
+          queueJobs.delete(job.job_id);
+          const card = document.getElementById('jc-' + job.job_id);
+          if (card) {
+            card.classList.add('fade-out');
+            setTimeout(() => card.remove(), 420);
+          }
+          return;
+        }
         queueJobs.set(job.job_id, job);
         const existing = document.getElementById('jc-' + job.job_id);
 
@@ -2909,19 +2918,28 @@
       });
 
       (data.inquiries || []).forEach(inquiry => {
-        inquiryJobs.set(inquiry.inquiry_id, inquiry);
-        const existing = document.getElementById('iqc-' + inquiry.inquiry_id);
-        if (existing) updateInquiryCard(existing, inquiry);
-        else insertInquiryCardSorted(makeInquiryCard(inquiry), inquiry);
-        if (currentInquiryId === inquiry.inquiry_id) {
-          applyInquirySelection(inquiry, false);
-        }
         const submittedUrl = normalizeInquiryUrl(document.getElementById('url-input').value);
         const inquiryUrl = normalizeInquiryUrl(inquiry.source_url);
         const selectedUrl = normalizeInquiryUrl(currentPlaylistUrl);
         if (inquiry.status === 'done' && inquiryUrl && (inquiryUrl === submittedUrl || inquiryUrl === selectedUrl)) {
           applyInquirySelection(inquiry, false);
           fetchPreviewPage();
+        }
+        if (inquiry.status === 'done' || inquiry.status === 'error' || inquiry.status === 'cancelled') {
+          inquiryJobs.delete(inquiry.inquiry_id);
+          const existing = document.getElementById('iqc-' + inquiry.inquiry_id);
+          if (existing) {
+            existing.classList.add('fade-out');
+            setTimeout(() => existing.remove(), 420);
+          }
+          return;
+        }
+        inquiryJobs.set(inquiry.inquiry_id, inquiry);
+        const existing = document.getElementById('iqc-' + inquiry.inquiry_id);
+        if (existing) updateInquiryCard(existing, inquiry);
+        else insertInquiryCardSorted(makeInquiryCard(inquiry), inquiry);
+        if (currentInquiryId === inquiry.inquiry_id) {
+          applyInquirySelection(inquiry, false);
         }
       });
 
