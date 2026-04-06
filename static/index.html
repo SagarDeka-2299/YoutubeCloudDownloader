@@ -1768,7 +1768,6 @@
     let currentPlaylistEntries = [];
     let currentPreviewTotal = 0;
     let excludedPlaylistUrls = new Set();
-    let queuedPreviewUrls = new Set();
     let draftGlobalSubtitleSelection = [];
     let appliedGlobalSubtitleSelection = [];
     let subtitleOverrides = new Map();
@@ -1783,47 +1782,6 @@
     let previewSubtitleState = '';
     let previewSortField = 'playlist_index';
     let previewSortOrder = 'asc';
-
-    function normalizeVideoUrl(url) {
-      const raw = String(url || '').trim();
-      if (!raw) return '';
-      const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
-      try {
-        const u = new URL(withScheme);
-        const host = (u.hostname || '').toLowerCase().replace(/^www\./, '').replace(/^m\./, '');
-        const qv = u.searchParams.get('v');
-        let vid = qv || '';
-        if (!vid && host === 'youtu.be') {
-          vid = (u.pathname || '').split('/').filter(Boolean)[0] || '';
-        }
-        if (!vid) {
-          const m = (u.pathname || '').match(/(?:^|\/)(?:shorts|embed|v|live)\/([0-9A-Za-z_-]{11})(?:\/|$)/);
-          if (m) vid = m[1];
-        }
-        if ((host === 'youtube.com' || host === 'youtu.be') && /^[0-9A-Za-z_-]{11}$/.test(vid)) {
-          return `https://www.youtube.com/watch?v=${vid}`;
-        }
-        return withScheme.replace(/\/+$/, '');
-      } catch (_) {
-        return raw.replace(/\/+$/, '');
-      }
-    }
-
-    function removeQueuedFromPreview(url) {
-      const normalized = normalizeVideoUrl(url);
-      if (!normalized) return;
-      queuedPreviewUrls.add(normalized);
-      const before = currentPlaylistEntries.length;
-      currentPlaylistEntries = currentPlaylistEntries.filter(e => normalizeVideoUrl(e?.url) !== normalized);
-      excludedPlaylistUrls.delete(normalized);
-      subtitleOverrides.delete(normalized);
-      if (before !== currentPlaylistEntries.length) {
-        currentPreviewTotal = Math.max(0, currentPreviewTotal - 1);
-        if (currentPlaylistType === 'video') hidePreviewList();
-        else renderPlaylistPage();
-        syncDownloadButton();
-      }
-    }
     let previewRequestToken = 0;
     const playlistPageSize = 10;
     const subtitleUiState = new Map();
@@ -2182,17 +2140,9 @@
           dlBtn.style.display = 'none';
           return;
         }
-        if (queuedPreviewUrls.has(normalizeVideoUrl(videoUrl))) {
-          dlBtn.style.display = 'none';
-          return;
-        }
         dlBtn.style.display = 'inline-flex';
         dlBtn.querySelector('#dl-txt').textContent = 'Download';
         dlBtn.onclick = () => submitSingleJob(videoUrl, getEntrySubtitleSelection(entry || { url: videoUrl }), null);
-        return;
-      }
-      if ((currentPlaylistEntries.length - excludedPlaylistUrls.size) <= 0) {
-        dlBtn.style.display = 'none';
         return;
       }
       if (!currentPlaylistUrl) {
@@ -2350,9 +2300,7 @@
         if (token !== previewRequestToken) return;
         if (!res.ok) throw new Error(data.detail || data.error || 'Failed to load preview');
         currentPreviewTotal = data.total || 0;
-        currentPlaylistEntries = (data.items || [])
-          .filter(item => !queuedPreviewUrls.has(normalizeVideoUrl(item?.url)))
-          .map(item => ({ ...item, info: item, predefined: item }));
+        currentPlaylistEntries = (data.items || []).map(item => ({ ...item, info: item, predefined: item }));
         playlistPage = data.page || 0;
         if (currentPlaylistType === 'video') {
           const video = currentPlaylistEntries[0];
@@ -2545,7 +2493,6 @@
                return;
             }
             if (!res.ok) throw new Error(data.detail || 'HTTP ' + res.status);
-            removeQueuedFromPreview(url);
             toast('Download queued!', 'in');
         } catch(e) {
             toast('Error: ' + e.message, 'er');
@@ -2592,15 +2539,7 @@
           const data = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(data.detail || ('HTTP ' + res.status));
 
-          if (data.queued) {
-            const queuedNow = currentPlaylistEntries
-              .filter(entry => entry?.url && !excludedPlaylistUrls.has(entry.url))
-              .map(entry => entry.url);
-            queuedNow.forEach((entryUrl) => {
-              removeQueuedFromPreview(entryUrl);
-            });
-            toast(`Queued ${data.queued} jobs`, 'ok');
-          }
+          if (data.queued) toast(`Queued ${data.queued} jobs`, 'ok');
           else toast('No new jobs queued', 'in');
           if (data.skipped_duplicates) toast(`Skipped ${data.skipped_duplicates} duplicates`, 'in');
           sendQueuePage();
@@ -2659,9 +2598,6 @@
       // Process updates / new jobs
       (data.jobs || []).forEach(job => {
         const prev = queueJobs.get(job.job_id);
-        if (job.status !== 'cancelled' && job.status !== 'error') {
-          removeQueuedFromPreview(job.url);
-        }
         if (job.status === 'done' || job.status === 'cancelled') {
           queueJobs.delete(job.job_id);
           const card = document.getElementById('jc-' + job.job_id);
