@@ -879,6 +879,7 @@ async def _startup() -> None:
     db.init_db()
     log("🗄️", "DB initialised")
     _migrate_media_storage_layout()
+    db.queue_cleanup_terminal()
     # Mark orphaned active rows as error (server was killed mid-download)
     rows, _ = db.queue_list(0, 9999)
     for row in rows:

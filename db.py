@@ -743,11 +743,12 @@ def queue_all() -> list[dict]:
 
 
 def queue_list(page: int = 0, limit: int = 10) -> tuple[list[dict], int]:
+    where = "WHERE status NOT IN ('done','cancelled')"
     with _conn() as c:
-        total = c.execute("SELECT COUNT(*) FROM queue").fetchone()[0]
+        total = c.execute(f"SELECT COUNT(*) FROM queue {where}").fetchone()[0]
         offset = page * limit
         rows = c.execute(
-            "SELECT * FROM queue ORDER BY created_at ASC LIMIT ? OFFSET ?",
+            f"SELECT * FROM queue {where} ORDER BY created_at ASC LIMIT ? OFFSET ?",
             (limit, offset),
         ).fetchall()
         return [dict(r) for r in rows], total
@@ -764,6 +765,12 @@ def queue_active_count() -> int:
 def queue_delete(job_id: str) -> None:
     with _conn() as c:
         c.execute("DELETE FROM queue WHERE job_id=?", (job_id,))
+        c.commit()
+
+
+def queue_cleanup_terminal() -> None:
+    with _conn() as c:
+        c.execute("DELETE FROM queue WHERE status IN ('done','cancelled')")
         c.commit()
 
 
