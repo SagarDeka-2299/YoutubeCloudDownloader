@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1.0" />
   <title>YTGrab – YouTube Downloader</title>
   <meta name="description"
-    content="Download audio and video from YouTube with async queue, folder selection, and live progress." />
+    content="Download audio and video from YouTube with async queue and live progress." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <style>
@@ -301,40 +301,6 @@
     .btn-ghost:hover:not(:disabled) {
       background: var(--s3);
       color: var(--t)
-    }
-
-    /* FOLDER WIDGET */
-    .folder-widget {
-      display: flex;
-      align-items: center;
-      gap: .5rem;
-      padding: .52rem .85rem;
-      border-radius: var(--rs);
-      border: 1px solid var(--b2);
-      background: var(--s2);
-      cursor: pointer;
-      transition: all .2s;
-      margin-bottom: .55rem;
-      font-size: .83rem;
-      color: var(--m)
-    }
-
-    .folder-widget:hover {
-      border-color: var(--ac2);
-      color: var(--t)
-    }
-
-    .folder-crumb {
-      flex: 1;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis
-    }
-
-    .folder-edit {
-      margin-left: auto;
-      opacity: .5;
-      font-size: .8rem
     }
 
     /* QUALITY ROW */
@@ -1098,123 +1064,10 @@
       color: var(--t)
     }
 
-    /* FOLDER BREADCRUMB */
-    .fp-breadcrumb {
-      display: flex;
-      align-items: center;
-      gap: .2rem;
-      padding: .65rem 1.1rem;
-      border-bottom: 1px solid var(--b1);
-      flex-wrap: wrap
-    }
-
-    .fp-crumb {
-      font-size: .8rem;
-      color: var(--m);
-      cursor: pointer;
-      padding: .15rem .3rem;
-      border-radius: 4px;
-      transition: all .15s
-    }
-
-    .fp-crumb:hover {
-      color: var(--t);
-      background: var(--s3)
-    }
-
-    .fp-crumb.active {
-      color: var(--t);
-      font-weight: 600;
-      cursor: default
-    }
-
-    .fp-sep {
-      color: var(--m2);
-      font-size: .75rem
-    }
-
-    /* FOLDER BODY */
     .fp-body {
       flex: 1;
       overflow-y: auto;
       padding: .6rem 1.1rem
-    }
-
-    .fp-empty {
-      padding: 1.5rem;
-      text-align: center;
-      color: var(--m);
-      font-size: .83rem
-    }
-
-    .fp-dir {
-      display: flex;
-      align-items: center;
-      gap: .6rem;
-      padding: .55rem .65rem;
-      border-radius: var(--rs);
-      border: 1px solid transparent;
-      margin-bottom: .3rem;
-      transition: all .18s;
-      cursor: pointer
-    }
-
-    .fp-dir:hover {
-      background: var(--s2);
-      border-color: var(--b2)
-    }
-
-    .fp-dir-name {
-      flex: 1;
-      font-size: .85rem;
-      font-weight: 500;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis
-    }
-
-    .fp-dir-count {
-      font-size: .72rem;
-      color: var(--m);
-      white-space: nowrap
-    }
-
-    .fp-dir-actions {
-      display: flex;
-      gap: .25rem;
-      flex-shrink: 0
-    }
-
-    /* FOLDER FOOTER */
-    .fp-new {
-      display: flex;
-      gap: .4rem;
-      padding: .65rem 1.1rem;
-      border-top: 1px solid var(--b1)
-    }
-
-    .fp-new input {
-      flex: 1;
-      padding: .5rem .7rem;
-      background: var(--s2);
-      border: 1px solid var(--b2);
-      border-radius: var(--rx);
-      color: var(--t);
-      font-size: .82rem;
-      outline: none;
-      font-family: inherit
-    }
-
-    .fp-new input:focus {
-      border-color: var(--ac2)
-    }
-
-    .fp-footer {
-      display: flex;
-      gap: .4rem;
-      padding: .65rem 1.1rem;
-      justify-content: space-between;
-      border-top: 1px solid var(--b1)
     }
 
     /* TOAST */
@@ -1308,7 +1161,7 @@
       <div class="logo-icon">▶</div>
       <h1>YTGrab</h1>
     </div>
-    <p class="sub">Async multi-download · Folder selection · Live progress</p>
+    <p class="sub">Async multi-download · Live progress</p>
   </header>
 
   <!-- ── Download card ─────────────────────────────────────────────────────── -->
@@ -1328,13 +1181,6 @@
       <button class="btn-p" id="dl-btn" style="display:none;">
         <span id="dl-txt">Download</span>
       </button>
-    </div>
-
-    <!-- Folder widget -->
-    <div class="folder-widget" id="folder-widget" onclick="openFolderPicker()">
-      <span>📁</span>
-      <span class="folder-crumb" id="folder-label">Root</span>
-      <span class="folder-edit">✎ Change</span>
     </div>
 
     <!-- Quality -->
@@ -1577,27 +1423,6 @@
     </div>
   </div>
 
-  <!-- ── Folder picker modal ───────────────────────────────────────────────── -->
-  <div class="modal-overlay" id="folder-modal">
-    <div class="modal">
-      <div class="modal-header">
-        <h3>📁 Select Download Folder</h3>
-        <button class="modal-close" onclick="closeFolderModal()">✕</button>
-      </div>
-      <div class="fp-breadcrumb" id="fp-breadcrumb"></div>
-      <div class="fp-body" id="fp-body"></div>
-      <div class="fp-new">
-        <input type="text" id="fp-new-name" placeholder="New folder name…"
-          onkeydown="if(event.key==='Enter')createNewFolder()" />
-        <button class="btn-g btn-xs" onclick="createNewFolder()">+ Create</button>
-      </div>
-      <div class="fp-footer">
-        <button class="btn-p btn-xs" onclick="selectCurrentFolder()">✓ Select this folder</button>
-        <button class="btn-ghost btn-xs" onclick="closeFolderModal()">Cancel</button>
-      </div>
-    </div>
-  </div>
-
   <!-- ── Transcript modal ────────────────────────────────────────────────── -->
   <div class="modal-overlay" id="transcript-modal">
     <div class="modal" style="max-width:800px; height:80vh; display:flex; flex-direction:column;">
@@ -1629,7 +1454,7 @@
 
   <script>
     // ── State ──────────────────────────────────────────────────────────────────
-    let dlMode = 'audio', quality = 'best', targetPath = '';
+    let dlMode = 'audio', quality = 'best';
     let libMode = 'audio', libOrder = 'desc', libPage = 0, libTotal = 0;
     const LIB_LIMIT = 5, QUEUE_PG = 5;
     let queuePage = 0, queueTotal = 0;
@@ -1644,7 +1469,6 @@
     let inquiryPage = 0, inquiryTotal = 0;
     let currentInquiryId = '';
     let currentInquiryStatus = '';
-    let fpType = 'audio', fpPath = '', fpCurrentPath = '';
     let _wsReconnectBanner = null;
 
     // ── Custom confirm dialog ──────────────────────────────────────────────────
@@ -1750,9 +1574,6 @@
       document.getElementById('tab-audio').classList.add('on');
       document.getElementById('tab-video').classList.remove('on');
       document.getElementById('q-row').classList.remove('on');
-      // Reset folder path for new mode
-      targetPath = '';
-      document.getElementById('folder-label').textContent = 'Root';
     }
     function setQ(btn) {
       document.querySelectorAll('.q-btn').forEach(b => b.classList.remove('on'));
@@ -2468,7 +2289,6 @@
                 url,
                 mode: 'audio',
                 quality,
-                target_path: targetPath,
                 subtitles,
                 inquiry_id: currentInquiryId || null,
               }),
@@ -2477,25 +2297,7 @@
             
             if (res.status === 409 && data.detail?.duplicate) {
                const ex = data.detail.media;
-               const ok = await showConfirm(
-                 'Duplicate Found',
-                 `"${ex.title || 'This video'}" was already downloaded.\nMove it to your currently selected Target Folder?`,
-                 { icon: '🔄', okLabel: 'Yes, Move It', okClass: 'btn-p' }
-               );
-               if (ok) {
-                 const mRes = await fetch('/api/media/' + ex.id + '/move', {
-                   method: 'POST',
-                   headers: { 'Content-Type': 'application/json' },
-                   body: JSON.stringify({ new_path: targetPath })
-                 });
-                 if (mRes.ok) {
-                   toast('Moved successfully', 'ok');
-                   loadLibrary();
-                 } else {
-                   const mData = await mRes.json().catch(()=>({}));
-                   toast('Move failed: ' + (mData.detail || mData.reason || 'Error'), 'er');
-                 }
-               }
+               toast(`Already downloaded: ${ex.title || 'this video'}`, 'in');
                return;
             }
             if (!res.ok) throw new Error(data.detail || 'HTTP ' + res.status);
@@ -2535,7 +2337,6 @@
               playlist_url: currentPlaylistUrl,
               mode: 'audio',
               quality,
-              target_path: targetPath,
               excluded_urls: Array.from(excludedPlaylistUrls),
               global_subtitles: appliedGlobalSubtitleSelection,
               individual_subtitles,
@@ -3150,101 +2951,6 @@
       renderZipMeta();
     }
 
-    // ── Folder picker ──────────────────────────────────────────────────────────
-    function openFolderPicker() {
-      fpType = dlMode;
-      fpCurrentPath = targetPath;
-      document.getElementById('folder-modal').classList.add('on');
-      loadFolderContents(fpType, fpCurrentPath);
-    }
-    function closeFolderModal() {
-      document.getElementById('folder-modal').classList.remove('on');
-    }
-    async function loadFolderContents(type, path) {
-      const body = document.getElementById('fp-body');
-      body.innerHTML = '<div class="fp-empty">Loading…</div>';
-      try {
-        const res = await fetch(`/api/folders?type=${encodeURIComponent(type)}&path=${encodeURIComponent(path)}`);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Failed');
-        fpCurrentPath = data.current || '';
-        // Breadcrumbs
-        const bc = document.getElementById('fp-breadcrumb');
-        bc.innerHTML = data.breadcrumbs.map((c, i, arr) => {
-          const isLast = i === arr.length - 1;
-          const sep = i < arr.length - 1 ? '<span class="fp-sep"> › </span>' : '';
-          return `<span class="fp-crumb${isLast ? ' active' : ''}" onclick="loadFolderContents('${type}','${esc(c.path)}')">${esc(c.name)}</span>${sep}`;
-        }).join('');
-        // Dir list
-        if (data.dirs.length === 0) {
-          body.innerHTML = '<div class="fp-empty">📂 No subfolders here. Create one below.</div>';
-        } else {
-          body.innerHTML = data.dirs.map(d => `
-        <div class="fp-dir">
-          <span>📁</span>
-          <span class="fp-dir-name" onclick="loadFolderContents('${type}','${esc(d.path)}')">${esc(d.name)}</span>
-          <span class="fp-dir-count">${d.has_files ? '🔒 has files' : 'empty'}</span>
-          <div class="fp-dir-actions">
-            <button class="btn-xs btn-ghost" onclick="selectFolder('${esc(d.path)}')">✓</button>
-            ${!d.has_files
-              ? `<button class="btn-xs btn-red" onclick="deleteFolder('${type}','${esc(d.path)}')">🗑</button>`
-              : `<button class="btn-xs btn-red" disabled title="Contains files — cannot delete">🗑</button>`
-            }
-          </div>
-        </div>`).join('');
-        }
-      } catch (e) {
-        body.innerHTML = `<div class="fp-empty" style="color:var(--red)">Error: ${esc(e.message)}</div>`;
-      }
-    }
-    function selectFolder(path) {
-      targetPath = path;
-      const parts = path ? path.split('/') : [];
-      document.getElementById('folder-label').textContent = parts.length > 0 ? parts.join(' › ') : 'Root';
-      closeFolderModal();
-      toast('Folder selected: ' + (path || 'Root'), 'ok');
-    }
-    function selectCurrentFolder() {
-      selectFolder(fpCurrentPath);
-    }
-    async function createNewFolder() {
-      const nameEl = document.getElementById('fp-new-name');
-      const name = nameEl.value.trim();
-      if (!name) { toast('Enter a folder name', 'er'); return; }
-      const path = fpCurrentPath ? fpCurrentPath + '/' + name : name;
-      try {
-        const res = await fetch('/api/folders', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ type: fpType, path }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Failed');
-        nameEl.value = '';
-        toast('Folder created!', 'ok');
-        loadFolderContents(fpType, fpCurrentPath);
-      } catch (e) {
-        toast('Error: ' + e.message, 'er');
-      }
-    }
-    async function deleteFolder(type, path) {
-      const ok = await showConfirm(
-        'Delete Folder',
-        `"${path.split('/').pop()}" will be permanently removed.`,
-        { icon: '🗂️' }
-      );
-      if (!ok) return;
-      try {
-        const res = await fetch(`/api/folders?type=${encodeURIComponent(type)}&path=${encodeURIComponent(path)}`, { method: 'DELETE' });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Cannot delete');
-        toast('Deleted!', 'ok');
-        loadFolderContents(type, fpCurrentPath);
-      } catch (e) {
-        toast('Error: ' + e.message, 'er');
-      }
-    }
-
     // ── Library ────────────────────────────────────────────────────────────────
     function switchLib(m) {
       libMode = m;
@@ -3391,7 +3097,9 @@
       const thumb = item.thumbnail
         ? `<img class="med-thumb" src="${esc(item.thumbnail)}" alt="" loading="lazy"/>`
         : `<div class="med-thumb-ph">${item.mode === 'video' ? '🎬' : '🎵'}</div>`;
-      const dlUrl = item.download_url || '#';
+      const dlUrl = libMode === 'video'
+        ? (item.video_download_url || item.download_url || item.audio_download_url || '#')
+        : (item.audio_download_url || item.download_url || item.video_download_url || '#');
       const ytUrl = item.youtube_url || '#';
       div.innerHTML = `
     ${thumb}

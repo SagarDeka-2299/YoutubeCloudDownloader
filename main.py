@@ -91,7 +91,6 @@ class DownloadJob:
         source_url: str = "",
         mode: str = "audio",
         quality: str = "best",
-        target_path: str = "",
         subtitles: list[str] | None = None,
         inquiry_id: str | None = None,
         retry_attempt: int = 1,
@@ -106,7 +105,6 @@ class DownloadJob:
         self.source_url = source_url
         self.mode = mode
         self.quality = quality
-        self.target_path = target_path
         self.subtitles = subtitles or []
         self.inquiry_id = inquiry_id
         self.retry_attempt = retry_attempt
@@ -189,6 +187,46 @@ def _resolve_media_abspath(record: dict) -> Path:
     return (base / name).resolve()
 
 
+def _find_variant_abspath(record: dict, desired_mode: str) -> Path | None:
+    primary = _resolve_media_abspath(record)
+    if primary.exists() and _mode_for_extension(primary, "") == desired_mode:
+        return primary
+
+    desired_root = _base_dir_for_mode(desired_mode)
+    rel_raw = str(record.get("file_path") or "").replace("\\", "/").strip()
+    file_name = str(record.get("file_name") or "").strip()
+    stem = Path(file_name or primary.name).stem
+    exts = _AUDIO_EXTS if desired_mode == "audio" else _VIDEO_EXTS
+
+    candidates: list[Path] = []
+    if rel_raw and not Path(rel_raw).is_absolute():
+        rel_dir = Path(rel_raw).parent
+        probe_dir = (desired_root / rel_dir).resolve()
+        if probe_dir.exists():
+            candidates.extend([p.resolve() for p in probe_dir.iterdir() if p.is_file() and p.stem == stem and p.suffix.lower() in exts])
+
+    if primary.parent.exists():
+        candidates.extend([p.resolve() for p in primary.parent.iterdir() if p.is_file() and p.stem == stem and p.suffix.lower() in exts])
+
+    if file_name:
+        exact = (desired_root / file_name).resolve()
+        if exact.exists() and exact.is_file() and exact.suffix.lower() in exts:
+            candidates.append(exact)
+
+    if desired_root.exists():
+        candidates.extend([p.resolve() for p in desired_root.rglob(f"{stem}.*") if p.is_file() and p.suffix.lower() in exts])
+
+    seen: set[str] = set()
+    ordered: list[Path] = []
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(candidate)
+    return ordered[0] if ordered else None
+
+
 def _ensure_file_in_mode_folder(path: Path, mode: str, target_subdir: str = "") -> Path:
     base = _base_dir_for_mode(mode).resolve()
     target_dir = (base / target_subdir.strip("/")).resolve() if target_subdir else base
@@ -210,6 +248,23 @@ def _ensure_file_in_mode_folder(path: Path, mode: str, target_subdir: str = "") 
             i += 1
     shutil.move(str(src), str(dst))
     return dst
+
+
+def _move_matching_variants(path: Path) -> int:
+    if not path.exists() or not path.parent.exists():
+        return 0
+    moved = 0
+    stem = path.stem
+    for sibling in list(path.parent.iterdir()):
+        if not sibling.is_file() or sibling == path or sibling.stem != stem:
+            continue
+        sibling_mode = _mode_for_extension(sibling, "")
+        if sibling_mode not in {"audio", "video"}:
+            continue
+        target = _ensure_file_in_mode_folder(sibling, sibling_mode)
+        if target != sibling:
+            moved += 1
+    return moved
 
 
 def _migrate_media_storage_layout() -> None:
@@ -235,6 +290,7 @@ def _migrate_media_storage_layout() -> None:
                 file_name=target_abs.name,
                 file_size=size,
             )
+            moved += _move_matching_variants(target_abs)
             updated += 1
 
     for root, dest_mode in ((AUDIO_DIR, "video"), (VIDEO_DIR, "audio")):
@@ -247,6 +303,12 @@ def _migrate_media_storage_layout() -> None:
                 moved += 1
 
     log("🧹", f"Storage migration complete — updated={updated} moved={moved}")
+
+
+def _build_download_url(path: Path, mode: str) -> str:
+    prefix = "/files/audio/" if mode == "audio" else "/files/video/"
+    rel = _as_relative_path(path, _base_dir_for_mode(mode))
+    return prefix + "/".join(p for p in rel.split("/") if p)
 
 
 # ── yt-dlp post-processor: saves to DB after ffmpeg is done ───────────────────
@@ -288,10 +350,11 @@ class _SaveToDB(yt_dlp.postprocessor.PostProcessor):
         # Normalize final file placement by extension and keep DB path relative.
         final_obj = Path(final_path).resolve() if final_path else Path()
         stored_mode = _mode_for_extension(final_obj, fallback=self._mode)
-        target_subdir = (self._job.target_path or "").strip("/")
+        target_subdir = ""
         if final_obj and final_obj.exists():
             final_obj = _ensure_file_in_mode_folder(final_obj, stored_mode, target_subdir)
             final_path = str(final_obj)
+            _move_matching_variants(final_obj)
 
         # If yt-dlp kept a merged mp4 in the audio folder, move it under VIDEO_DIR.
         for dl in downloads:
@@ -304,6 +367,8 @@ class _SaveToDB(yt_dlp.postprocessor.PostProcessor):
             side_mode = _mode_for_extension(p, fallback=self._mode)
             if side_mode == "video":
                 _ensure_file_in_mode_folder(p, "video", target_subdir)
+            elif side_mode == "audio":
+                _ensure_file_in_mode_folder(p, "audio", target_subdir)
 
         # Get actual size from disk if not provided
         if not final_size and final_path and Path(final_path).exists():
@@ -474,7 +539,6 @@ def _queue_retry_item(job: DownloadJob, error_msg: str) -> None:
             "source_url": key,
             "mode": job.mode,
             "quality": job.quality,
-            "target_path": job.target_path,
             "subtitles": list(job.subtitles or []),
             "inquiry_id": job.inquiry_id,
             "retry_attempt": next_attempt,
@@ -515,7 +579,6 @@ async def _process_inquiry_retries() -> None:
                         url=item["source_url"],
                         mode=item.get("mode") or "audio",
                         quality=item.get("quality") or "best",
-                        target_path=item.get("target_path") or "",
                         subtitles=item.get("subtitles") or [],
                         inquiry_id=item.get("inquiry_id"),
                         retry_attempt=int(item.get("retry_attempt") or 1),
@@ -530,12 +593,12 @@ async def _process_inquiry_retries() -> None:
 
 # ── Download worker ────────────────────────────────────────────────────────────
 async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
-                   target_path: str, subtitles: list[str]) -> None:
+                   subtitles: list[str]) -> None:
     global _dl_semaphore, _download_executor
     loop       = asyncio.get_event_loop()
     job_short  = job.job_id[:8]
     base_dir   = AUDIO_DIR if mode == "audio" else VIDEO_DIR
-    output_dir = (base_dir / target_path).resolve() if target_path else base_dir.resolve()
+    output_dir = base_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     opts       = _build_opts(mode, quality, output_dir, subtitles)
 
@@ -748,113 +811,11 @@ async def index() -> HTMLResponse:
     return HTMLResponse(content=Path("static/index.html").read_text())
 
 
-# ── Folder helpers ─────────────────────────────────────────────────────────────
-def _base_for(ftype: str) -> Path:
-    if ftype == "audio":
-        return AUDIO_DIR.resolve()
-    elif ftype == "video":
-        return VIDEO_DIR.resolve()
-    raise ValueError(f"Unknown type: {ftype}")
-
-
-def _safe_resolve(base: Path, rel: str) -> Path:
-    target = (base / rel).resolve()
-    if not str(target).startswith(str(base)):
-        raise ValueError("Path escapes root")
-    return target
-
-
-def _has_media_files(directory: Path) -> bool:
-    for item in directory.rglob("*"):
-        if item.is_file():
-            return True
-    return False
-
-
-@app.get("/api/folders")
-async def list_folders(type: str = "audio", path: str = "") -> dict:
-    loop = asyncio.get_event_loop()
-
-    def _list() -> dict:
-        base = _base_for(type)
-        try:
-            current = _safe_resolve(base, path)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        current.mkdir(parents=True, exist_ok=True)
-        rel    = current.relative_to(base)
-        parts  = list(rel.parts)
-        crumbs = [{"name": "Root", "path": ""}]
-        cumul  = ""
-        for part in parts:
-            cumul = f"{cumul}/{part}".lstrip("/")
-            crumbs.append({"name": part, "path": cumul})
-        dirs = []
-        for item in sorted(current.iterdir()):
-            if item.is_dir():
-                rel_path = str(item.relative_to(base))
-                dirs.append({"name": item.name, "path": rel_path,
-                             "has_files": _has_media_files(item)})
-        return {
-            "type":        type,
-            "current":     str(current.relative_to(base)) if current != base else "",
-            "breadcrumbs": crumbs,
-            "dirs":        dirs,
-        }
-
-    return await loop.run_in_executor(None, _list)
-
-
-class FolderCreate(BaseModel):
-    type: str
-    path: str
-
-
-@app.post("/api/folders")
-async def create_folder(req: FolderCreate) -> dict:
-    loop = asyncio.get_event_loop()
-
-    def _create() -> dict:
-        base = _base_for(req.type)
-        try:
-            target = _safe_resolve(base, req.path)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        target.mkdir(parents=True, exist_ok=True)
-        return {"created": str(target.relative_to(base))}
-
-    return await loop.run_in_executor(None, _create)
-
-
-@app.delete("/api/folders")
-async def delete_folder(type: str, path: str) -> dict:
-    loop = asyncio.get_event_loop()
-
-    def _delete() -> dict:
-        base = _base_for(type)
-        if not path or path in (".", "/", ""):
-            raise HTTPException(status_code=400, detail="Cannot delete root folder")
-        try:
-            target = _safe_resolve(base, path)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        if not target.exists():
-            raise HTTPException(status_code=404, detail="Folder not found")
-        if _has_media_files(target):
-            raise HTTPException(status_code=409,
-                                detail="Folder contains files – move or delete files first")
-        shutil.rmtree(target)
-        return {"deleted": path}
-
-    return await loop.run_in_executor(None, _delete)
-
-
 # ── Jobs + Queue ───────────────────────────────────────────────────────────────
 class JobRequest(BaseModel):
     url:         str
     mode:        Literal["audio", "video"] = "audio"
     quality:     str                       = "best"
-    target_path: str                       = ""
     subtitles:   list[str]                 = []
     inquiry_id:  str | None                = None
 
@@ -863,7 +824,6 @@ class PlaylistJobRequest(BaseModel):
     playlist_url:         str
     mode:                 Literal["audio", "video"] = "audio"
     quality:              str                       = "best"
-    target_path:          str                       = ""
     excluded_urls:        list[str]                 = []
     global_subtitles:     list[str]                 = []
     individual_subtitles: dict[str, list[str]]      = {}
@@ -1533,7 +1493,6 @@ async def _enqueue_job(
     url: str,
     mode: str,
     quality: str,
-    target_path: str,
     subtitles: list[str] | None,
     inquiry_id: str | None = None,
     retry_attempt: int = 1,
@@ -1553,7 +1512,6 @@ async def _enqueue_job(
         source_url=url,
         mode=normalized_mode,
         quality=quality,
-        target_path=target_path,
         subtitles=normalized_subs,
         inquiry_id=inquiry_id,
         retry_attempt=retry_attempt,
@@ -1561,11 +1519,11 @@ async def _enqueue_job(
     _jobs[job_id] = job
 
     await loop.run_in_executor(
-        None, db.queue_insert, job_id, url, normalized_mode, quality, target_path
+        None, db.queue_insert, job_id, url, normalized_mode, quality, ""
     )
     log("✅", f"Job {job_id[:8]} inserted into queue")
     asyncio.create_task(
-        _run_job(job, url, normalized_mode, quality, target_path, normalized_subs)
+        _run_job(job, url, normalized_mode, quality, normalized_subs)
     )
     return job_id, None
 
@@ -1579,7 +1537,6 @@ async def create_job(req: JobRequest) -> dict:
         url=req.url,
         mode="audio",
         quality=req.quality,
-        target_path=req.target_path,
         subtitles=req.subtitles,
         inquiry_id=req.inquiry_id,
     )
@@ -1634,7 +1591,6 @@ async def create_playlist_jobs(req: PlaylistJobRequest) -> dict:
             url=entry_url,
             mode="audio",
             quality=req.quality,
-            target_path=req.target_path,
             subtitles=subtitles,
             inquiry_id=req.inquiry_id,
         )
@@ -2130,17 +2086,43 @@ async def list_media(
         min_duration, max_duration, tag_list, sub_lang,
     )
     for item in items:
-        item_mode = str(item.get("mode") or "audio")
-        prefix = "/files/audio/" if item_mode == "audio" else "/files/video/"
-        fp = str(item.get("file_path") or "").replace("\\", "/").lstrip("/")
-        rel = fp if fp else str(item.get("file_name") or "")
-        item["download_url"] = prefix + "/".join(p for p in rel.split("/") if p)
+        audio_fp = _find_variant_abspath(item, "audio")
+        video_fp = _find_variant_abspath(item, "video")
+        item["audio_download_url"] = _build_download_url(audio_fp, "audio") if audio_fp else ""
+        item["video_download_url"] = _build_download_url(video_fp, "video") if video_fp else ""
+        if mode == "video":
+            item["download_url"] = item["video_download_url"] or item["audio_download_url"]
+        else:
+            item["download_url"] = item["audio_download_url"] or item["video_download_url"]
     return {"items": items, "total": total, "stats": stats}
 
 @app.get("/api/library_summary")
 async def library_summary() -> dict:
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, db.media_size_summary)
+    def _summary() -> dict[str, int]:
+        audio_bytes = 0
+        video_bytes = 0
+        seen_audio: set[str] = set()
+        seen_video: set[str] = set()
+        for record in db.list_all_media_records():
+            audio_fp = _find_variant_abspath(record, "audio")
+            if audio_fp and audio_fp.exists():
+                key = str(audio_fp.resolve())
+                if key not in seen_audio:
+                    seen_audio.add(key)
+                    audio_bytes += audio_fp.stat().st_size
+            video_fp = _find_variant_abspath(record, "video")
+            if video_fp and video_fp.exists():
+                key = str(video_fp.resolve())
+                if key not in seen_video:
+                    seen_video.add(key)
+                    video_bytes += video_fp.stat().st_size
+        return {
+            "audio_bytes": audio_bytes,
+            "video_bytes": video_bytes,
+            "total_bytes": audio_bytes + video_bytes,
+        }
+    return await loop.run_in_executor(None, _summary)
 
 
 @app.get("/api/channels")
@@ -2197,13 +2179,24 @@ async def _zip_worker(job_id: str, client_ip: str, req: ZipJobRequest, cancel_ev
         
         items = await loop.run_in_executor(
             None, db.query_media,
-            req.mode, req.channel_id, req.min_views, req.max_views, req.min_likes,
+            "all", req.channel_id, req.min_views, req.max_views, req.min_likes,
             req.min_duration, req.max_duration, tag_list, req.sub_lang,
             req.sort_by, req.order, 10000, 0
         )
         
         if not items:
             await loop.run_in_executor(None, lambda: db.zip_update(job_id, status="error", error_msg="No matching files found to zip"))
+            _active_zip_tasks.pop(job_id, None)
+            return
+
+        selected_items: list[tuple[dict, Path]] = []
+        for item in items:
+            fp = _find_variant_abspath(item, req.mode)
+            if fp and fp.exists():
+                selected_items.append((item, fp))
+
+        if not selected_items:
+            await loop.run_in_executor(None, lambda: db.zip_update(job_id, status="error", error_msg=f"No {req.mode} files found to zip"))
             _active_zip_tasks.pop(job_id, None)
             return
 
@@ -2216,15 +2209,14 @@ async def _zip_worker(job_id: str, client_ip: str, req: ZipJobRequest, cancel_ev
                 return cleaned.strip("._-") or "x"
 
             with zipfile.ZipFile(final_zip_path, 'w', zipfile.ZIP_STORED) as zf:
-                total = len(items)
-                for i, it in enumerate(items):
+                total = len(selected_items)
+                for i, (it, fp) in enumerate(selected_items):
                     if cancel_ev.is_set():
                         break
                     
                     if i % max(1, total // 50) == 0 or i == total - 1:
                         db.zip_update(job_id, percent=round((i / total) * 100, 1), title=f"Zipped {i}/{total}")
-                    
-                    fp = _resolve_media_abspath(it)
+
                     if fp.exists():
                         zf.write(str(fp), arcname=fp.name)
                     if req.mode == "audio":
@@ -2250,7 +2242,7 @@ async def _zip_worker(job_id: str, client_ip: str, req: ZipJobRequest, cancel_ev
             _active_zip_tasks.pop(job_id, None)
             return
             
-        await loop.run_in_executor(None, lambda: db.zip_update(job_id, status="done", percent=100, title=f"Complete ({len(items)} items)"))
+        await loop.run_in_executor(None, lambda: db.zip_update(job_id, status="done", percent=100, title=f"Complete ({len(selected_items)} items)"))
         _active_zip_tasks.pop(job_id, None)
         
     except Exception as e:
@@ -2310,12 +2302,22 @@ async def delete_media(media_id: int) -> dict:
         if not record:
             return False
         fp = _resolve_media_abspath(record)
+        removed_counterpart = False
         if fp:
             try:
                 fp.unlink(missing_ok=True)
                 log("🗑️", f"Deleted file: {fp}")
             except Exception as e:
                 log("⚠️", f"Could not delete file {fp}: {e}")
+            counterpart_mode = "video" if str(record.get("mode") or "audio") == "audio" else "audio"
+            counterpart = _find_variant_abspath(record, counterpart_mode)
+            if counterpart and counterpart.exists():
+                try:
+                    counterpart.unlink(missing_ok=True)
+                    removed_counterpart = True
+                    log("🗑️", f"Deleted counterpart file: {counterpart}")
+                except Exception as e:
+                    log("⚠️", f"Could not delete counterpart {counterpart}: {e}")
         db.delete_media_record(media_id)
         return True
 
@@ -2323,43 +2325,3 @@ async def delete_media(media_id: int) -> dict:
     if not success:
         raise HTTPException(status_code=404, detail="Not found")
     return {"deleted": media_id}
-
-
-class MoveRequest(BaseModel):
-    new_path: str
-
-
-@app.post("/api/media/{media_id}/move")
-async def move_media(media_id: int, req: MoveRequest) -> dict:
-    loop   = asyncio.get_event_loop()
-    record = await loop.run_in_executor(None, db.get_media_by_id, media_id)
-    if not record:
-        raise HTTPException(status_code=404, detail="Not found")
-    src_fp = _resolve_media_abspath(record)
-    if not src_fp or not src_fp.exists():
-        raise HTTPException(status_code=404, detail="Source file missing on disk")
-    mode     = _mode_for_extension(src_fp, fallback=str(record.get("mode") or "audio"))
-    base_dir = AUDIO_DIR if mode == "audio" else VIDEO_DIR
-    target_dir = (base_dir / req.new_path.strip("/")).resolve()
-    target_dir.mkdir(parents=True, exist_ok=True)
-    new_fp = target_dir / src_fp.name
-    if str(src_fp.resolve()) == str(new_fp.resolve()):
-        return {"moved": False, "reason": "Already at target"}
-    if new_fp.exists():
-        raise HTTPException(status_code=400, detail="File already exists in target folder")
-
-    def _move():
-        shutil.move(str(src_fp), str(new_fp))
-        rel = _as_relative_path(new_fp, base_dir)
-        size = new_fp.stat().st_size if new_fp.exists() else int(record.get("file_size") or 0)
-        db.update_media_file_record(
-            media_id,
-            mode=mode,
-            file_path=rel,
-            file_name=new_fp.name,
-            file_size=size,
-        )
-        log("📦", f"Moved {src_fp} → {new_fp}")
-
-    await loop.run_in_executor(None, _move)
-    return {"moved": True, "new_path": str(new_fp)}
