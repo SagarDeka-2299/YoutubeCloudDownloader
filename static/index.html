@@ -1183,6 +1183,24 @@
       </button>
     </div>
 
+    <div id="inquiry-queue-card" class="card" style="margin-top:0.65rem; margin-bottom:1rem;">
+      <div class="card-hdr">
+        <span class="card-title">🧾 Inquiry Queue</span>
+        <span id="inquiry-queue-count" style="font-size:.76rem;color:var(--m)"></span>
+      </div>
+      <div class="queue-list" id="inquiry-queue-list">
+        <div class="empty">
+          <div class="empty-icon">🧾</div>
+          <div>No inquiries yet</div>
+        </div>
+      </div>
+      <div class="pager" id="inquiry-queue-pager" style="display:none">
+        <button class="pager-btn" id="iq-prev" onclick="inquiryPrev()">‹</button>
+        <span class="pager-info" id="inquiry-pager-info"></span>
+        <button class="pager-btn" id="iq-next" onclick="inquiryNext()">›</button>
+      </div>
+    </div>
+
     <!-- Quality -->
     <div class="q-row" id="q-row" style="display:none">
       <span class="q-label">Quality:</span>
@@ -1216,25 +1234,6 @@
         </div>
       </div>
     </div>
-    
-    <div id="inquiry-queue-card" class="card" style="margin-top:0.65rem; margin-bottom:1rem;">
-      <div class="card-hdr">
-        <span class="card-title">🧾 Inquiry Queue</span>
-        <span id="inquiry-queue-count" style="font-size:.76rem;color:var(--m)"></span>
-      </div>
-      <div class="queue-list" id="inquiry-queue-list">
-        <div class="empty">
-          <div class="empty-icon">🧾</div>
-          <div>No inquiries yet</div>
-        </div>
-      </div>
-      <div class="pager" id="inquiry-queue-pager" style="display:none">
-        <button class="pager-btn" id="iq-prev" onclick="inquiryPrev()">‹</button>
-        <span class="pager-info" id="inquiry-pager-info"></span>
-        <button class="pager-btn" id="iq-next" onclick="inquiryNext()">›</button>
-      </div>
-    </div>
-
     <!-- Playlist box -->
     <div id="playlist-box" style="display:none; width:100%; margin-top:0.65rem; margin-bottom:1rem; flex-direction:column; gap:0.5rem;">
     </div>
@@ -1261,25 +1260,6 @@
       <button class="pager-btn" id="q-prev" onclick="queuePrev()">‹</button>
       <span class="pager-info" id="pager-info"></span>
       <button class="pager-btn" id="q-next" onclick="queueNext()">›</button>
-    </div>
-  </div>
-
-  <!-- ── Zip Queue card ─────────────────────────────────────────────────────── -->
-  <div class="card" id="zip-queue-card">
-    <div class="card-hdr">
-      <span class="card-title">📦 Zip Export Queue</span>
-      <span id="zip-queue-count" style="font-size:.76rem;color:var(--m)"></span>
-    </div>
-    <div class="queue-list" id="zip-queue-list">
-      <div class="empty">
-        <div class="empty-icon">📦</div>
-        <div>No active zips</div>
-      </div>
-    </div>
-    <div class="pager" id="zip-queue-pager" style="display:none">
-      <button class="pager-btn" id="zq-prev" onclick="zipPrev()">‹</button>
-      <span class="pager-info" id="zip-pager-info"></span>
-      <button class="pager-btn" id="zq-next" onclick="zipNext()">›</button>
     </div>
   </div>
 
@@ -1371,6 +1351,25 @@
       <button class="pager-btn" id="lib-prev" onclick="setLibraryPageDelta(-1)">‹</button>
       <span class="pager-info" id="library-pager-info"></span>
       <button class="pager-btn" id="lib-next" onclick="setLibraryPageDelta(1)">›</button>
+    </div>
+  </div>
+
+  <!-- ── Zip Queue card ─────────────────────────────────────────────────────── -->
+  <div class="card" id="zip-queue-card">
+    <div class="card-hdr">
+      <span class="card-title">📦 Zip Export Queue</span>
+      <span id="zip-queue-count" style="font-size:.76rem;color:var(--m)"></span>
+    </div>
+    <div class="queue-list" id="zip-queue-list">
+      <div class="empty">
+        <div class="empty-icon">📦</div>
+        <div>No active zips</div>
+      </div>
+    </div>
+    <div class="pager" id="zip-queue-pager" style="display:none">
+      <button class="pager-btn" id="zq-prev" onclick="zipPrev()">‹</button>
+      <span class="pager-info" id="zip-pager-info"></span>
+      <button class="pager-btn" id="zq-next" onclick="zipNext()">›</button>
     </div>
   </div>
 
@@ -3060,17 +3059,27 @@
         const items = data.items || [];
         libTotal = Number(data.total || 0);
         const stats = data.stats || {};
-        const totalBytes = Number(stats.total_bytes || 0);
-        const totalHours = Number(stats.total_duration_seconds || 0) / 3600;
+        const filteredBytes = Number(stats.total_bytes || 0);
+        const filteredHours = Number(stats.total_duration_seconds || 0) / 3600;
+        const mediaCount = Number(summary.media_count || 0);
+        const totalHours = Number(summary.duration_seconds || 0) / 3600;
         const audioBytes = Number(summary.audio_bytes || 0);
         const videoBytes = Number(summary.video_bytes || 0);
         const allBytes = Number(summary.total_bytes || (audioBytes + videoBytes));
         const list = document.getElementById('media-list');
         const parts = [];
-        if (libTotal > 0) parts.push(`${libTotal} download${libTotal !== 1 ? 's' : ''}`);
-        if (allBytes > 0) parts.push(`${fmtBytes(audioBytes)} music + ${fmtBytes(videoBytes)} videos = ${fmtBytes(allBytes)}`);
-        if (totalBytes > 0 && totalBytes !== allBytes) parts.push(`Filtered: ${fmtBytes(totalBytes)}`);
+        parts.push(`${mediaCount} media`);
+        parts.push(`${fmtBytes(allBytes)} total`);
+        parts.push(`${fmtBytes(audioBytes)} audio`);
+        parts.push(`${fmtBytes(videoBytes)} video`);
         if (totalHours > 0) parts.push(`${totalHours.toFixed(1)} h`);
+        if (libTotal !== mediaCount || (filteredBytes > 0 && filteredBytes !== allBytes) || (filteredHours > 0 && Math.abs(filteredHours - totalHours) > 0.05)) {
+          const filtered = [];
+          filtered.push(`${libTotal} shown`);
+          if (filteredBytes > 0) filtered.push(fmtBytes(filteredBytes));
+          if (filteredHours > 0) filtered.push(`${filteredHours.toFixed(1)} h`);
+          parts.push(`Filtered: ${filtered.join(' · ')}`);
+        }
         document.getElementById('library-total-count').textContent = parts.join(' · ');
         list.innerHTML = '';
         if (!items.length) {

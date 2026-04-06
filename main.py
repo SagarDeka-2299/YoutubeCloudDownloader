@@ -2114,9 +2114,13 @@ async def library_summary() -> dict:
     def _summary() -> dict[str, int]:
         audio_bytes = 0
         video_bytes = 0
+        duration_seconds = 0
+        media_count = 0
         seen_audio: set[str] = set()
         seen_video: set[str] = set()
         for record in db.list_all_media_records():
+            media_count += 1
+            duration_seconds += int(record.get("duration") or 0)
             audio_fp = _find_variant_abspath(record, "audio")
             if audio_fp and audio_fp.exists():
                 key = str(audio_fp.resolve())
@@ -2130,6 +2134,8 @@ async def library_summary() -> dict:
                     seen_video.add(key)
                     video_bytes += video_fp.stat().st_size
         return {
+            "media_count": media_count,
+            "duration_seconds": duration_seconds,
             "audio_bytes": audio_bytes,
             "video_bytes": video_bytes,
             "total_bytes": audio_bytes + video_bytes,
