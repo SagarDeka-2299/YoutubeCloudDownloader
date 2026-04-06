@@ -2,14 +2,12 @@ services:
   ytgrab:
     build: .
     ports:
-      - "8000:8000"
+      - "${HOST_PORT:-8000}:8000"
     volumes:
-      - ./data:${DATA_DIR:-/app/data}
-      - ./downloads/audio:${AUDIO_DIR:-/app/audio}
-      - ./downloads/video:${VIDEO_DIR:-/app/video}
-      - ./downloads/zips:${ZIP_DIR:-/app/zips}
-      # Optional: export cookies from your browser and place at ./cookies.txt
-      # Then uncomment the line below to bypass YouTube bot detection:
+      - ${DOWNLOADS_BASE:-.}/data:${DATA_DIR:-/app/data}
+      - ${DOWNLOADS_BASE:-.}/downloads/audio:${AUDIO_DIR:-/app/audio}
+      - ${DOWNLOADS_BASE:-.}/downloads/video:${VIDEO_DIR:-/app/video}
+      - ${DOWNLOADS_BASE:-.}/downloads/zips:${ZIP_DIR:-/app/zips}
       - ./cookies.txt:${COOKIES_FILE:-/app/cookies.txt}:ro
     environment:
       DATA_DIR:       ${DATA_DIR:-/app/data}
@@ -17,6 +15,5 @@ services:
       VIDEO_DIR:      ${VIDEO_DIR:-/app/video}
       ZIP_DIR:        ${ZIP_DIR:-/app/zips}
       MAX_CONCURRENT: "${MAX_CONCURRENT:-3}"
-      # Uncomment after mounting cookies.txt above:
       COOKIES_FILE:   ${COOKIES_FILE:-/app/cookies.txt}
     restart: unless-stopped
