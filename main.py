@@ -2137,6 +2137,11 @@ async def list_media(
         item["download_url"] = prefix + "/".join(p for p in rel.split("/") if p)
     return {"items": items, "total": total, "stats": stats}
 
+@app.get("/api/library_summary")
+async def library_summary() -> dict:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, db.media_size_summary)
+
 
 @app.get("/api/channels")
 async def list_channels() -> list[dict]:
@@ -2206,6 +2211,10 @@ async def _zip_worker(job_id: str, client_ip: str, req: ZipJobRequest, cancel_ev
         await loop.run_in_executor(None, lambda: db.zip_update(job_id, status="zipping", title="Exporting Library...", percent=0, zip_path=final_zip_path))
         
         def create_zip():
+            def _safe_piece(s: str) -> str:
+                cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(s or "").strip())
+                return cleaned.strip("._-") or "x"
+
             with zipfile.ZipFile(final_zip_path, 'w', zipfile.ZIP_STORED) as zf:
                 total = len(items)
                 for i, it in enumerate(items):
@@ -2218,6 +2227,19 @@ async def _zip_worker(job_id: str, client_ip: str, req: ZipJobRequest, cancel_ev
                     fp = _resolve_media_abspath(it)
                     if fp.exists():
                         zf.write(str(fp), arcname=fp.name)
+                    if req.mode == "audio":
+                        media_id = int(it.get("id") or 0)
+                        if media_id > 0:
+                            transcripts = db.get_transcripts(media_id)
+                            base_stem = _safe_piece(Path(str(it.get("file_name") or fp.name)).stem)
+                            video_id = _safe_piece(str(it.get("youtube_id") or media_id))
+                            for tr in transcripts:
+                                lang = _safe_piece(str(tr.get("language") or "unknown"))
+                                text = str(tr.get("text") or "").strip()
+                                if not text:
+                                    continue
+                                arc = f"subtitles/{base_stem}__{video_id}.{lang}.txt"
+                                zf.writestr(arc, text)
                         
         await loop.run_in_executor(None, create_zip)
         

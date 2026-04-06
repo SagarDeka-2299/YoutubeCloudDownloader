@@ -2125,7 +2125,8 @@
     function syncDownloadButton() {
       const dlBtn = document.getElementById('dl-btn');
       const currentInput = document.getElementById('url-input').value.trim();
-      if (!lastFetchedUrl || currentInput !== lastFetchedUrl) {
+      const sameInput = normalizeInquiryUrl(currentInput) === normalizeInquiryUrl(lastFetchedUrl);
+      if (!lastFetchedUrl || !sameInput) {
         dlBtn.style.display = 'none';
         return;
       }
@@ -2346,7 +2347,8 @@
       currentInquiryId = inquiry.inquiry_id || currentInquiryId;
       currentInquiryStatus = inquiry.status || currentInquiryStatus;
       currentPlaylistUrl = inquiry.source_url || '';
-      currentPlaylistType = inquiry.source_type || 'playlist';
+      const inferredType = inquiry.source_type || ((Number(inquiry.total_count || 0) === 1) ? 'video' : 'playlist');
+      currentPlaylistType = inferredType;
       currentPreviewTotal = inquiry.total_count || 0;
       if (reset) {
         playlistPage = 0;
@@ -2365,7 +2367,7 @@
         knownSubtitleLangs = new Set();
       }
       renderInfoCard({
-        type: inquiry.source_type || 'playlist',
+        type: inferredType,
         title: inquiry.title || inquiry.source_url,
         uploader: inquiry.uploader || '',
         count: inquiry.total_count || 0,
@@ -3296,7 +3298,7 @@
     }
     function buildParams(off = 0, forLibrary = true) {
       const p = new URLSearchParams({
-        mode: forLibrary ? 'all' : libMode,
+        mode: libMode,
         sort_by: document.getElementById('sort-field').value,
         order: libOrder, limit: LIB_LIMIT, offset: off,
       });
@@ -3339,18 +3341,25 @@
     async function loadMedia(reset = false) {
       if (reset) { libPage = 0; }
       try {
-        const res = await fetch('/api/media?' + buildParams(libPage * LIB_LIMIT, true));
+        const [res, summaryRes] = await Promise.all([
+          fetch('/api/media?' + buildParams(libPage * LIB_LIMIT, true)),
+          fetch('/api/library_summary'),
+        ]);
         const data = await res.json();
+        const summary = summaryRes.ok ? await summaryRes.json() : {};
         const items = data.items || [];
         libTotal = Number(data.total || 0);
         const stats = data.stats || {};
         const totalBytes = Number(stats.total_bytes || 0);
         const totalHours = Number(stats.total_duration_seconds || 0) / 3600;
-        const totalGb = totalBytes / (1024 ** 3);
+        const audioBytes = Number(summary.audio_bytes || 0);
+        const videoBytes = Number(summary.video_bytes || 0);
+        const allBytes = Number(summary.total_bytes || (audioBytes + videoBytes));
         const list = document.getElementById('media-list');
         const parts = [];
         if (libTotal > 0) parts.push(`${libTotal} download${libTotal !== 1 ? 's' : ''}`);
-        if (totalGb > 0) parts.push(`${totalGb.toFixed(2)} GB`);
+        if (allBytes > 0) parts.push(`${fmtBytes(audioBytes)} music + ${fmtBytes(videoBytes)} videos = ${fmtBytes(allBytes)}`);
+        if (totalBytes > 0 && totalBytes !== allBytes) parts.push(`Filtered: ${fmtBytes(totalBytes)}`);
         if (totalHours > 0) parts.push(`${totalHours.toFixed(1)} h`);
         document.getElementById('library-total-count').textContent = parts.join(' · ');
         list.innerHTML = '';

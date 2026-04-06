@@ -353,6 +353,22 @@ def query_media_stats(
     }
 
 
+def media_size_summary() -> dict[str, int]:
+    with _conn() as c:
+        audio = c.execute(
+            "SELECT COALESCE(SUM(file_size),0) FROM media WHERE mode='audio'"
+        ).fetchone()[0] or 0
+        video = c.execute(
+            "SELECT COALESCE(SUM(file_size),0) FROM media WHERE mode='video'"
+        ).fetchone()[0] or 0
+    total = int(audio) + int(video)
+    return {
+        "audio_bytes": int(audio),
+        "video_bytes": int(video),
+        "total_bytes": int(total),
+    }
+
+
 def get_channels() -> list[dict]:
     with _conn() as c:
         return [dict(r) for r in c.execute(
