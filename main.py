@@ -10,6 +10,7 @@ import shutil
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -17,10 +18,11 @@ from uuid import uuid4
 import yt_dlp
 import db
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from starlette.background import BackgroundTask
 import tempfile
 import zipfile
+from threading import Lock
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -64,6 +66,8 @@ app.mount("/files/audio", StaticFiles(directory=str(AUDIO_DIR)), name="audio_fil
 app.mount("/files/video", StaticFiles(directory=str(VIDEO_DIR)), name="video_files")
 
 _dl_semaphore: asyncio.Semaphore
+_playlist_preview_status: dict[str, dict[str, Any]] = {}
+_playlist_preview_lock = Lock()
 
 
 # ── Job registry ───────────────────────────────────────────────────────────────
@@ -598,35 +602,537 @@ class JobRequest(BaseModel):
     subtitles:   list[str]                 = []
 
 
+class PlaylistJobRequest(BaseModel):
+    playlist_url:         str
+    mode:                 Literal["audio", "video"] = "audio"
+    quality:              str                       = "best"
+    target_path:          str                       = ""
+    excluded_urls:        list[str]                 = []
+    global_subtitles:     list[str]                 = []
+    individual_subtitles: dict[str, list[str]]      = {}
+
+
+class InquiryRequest(BaseModel):
+    url: str
+
+
 def extract_youtube_id(url: str) -> str | None:
     match = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11})(?:[?&]|$)', url)
     return match.group(1) if match else None
+
+
+def _normalize_subtitles(subtitles: list[str] | None) -> list[str]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for lang in subtitles or []:
+        value = str(lang or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        cleaned.append(value)
+    return cleaned
+
+
+def _sort_and_filter_preview_items(
+    items: list[dict[str, Any]],
+    *,
+    sort_by: str,
+    order: str,
+    min_duration: int | None,
+    max_duration: int | None,
+    min_views: int | None,
+    min_likes: int | None,
+    max_likes: int | None,
+    subtitle_state: str | None,
+    page: int,
+    limit: int,
+) -> dict:
+    def keep(item: dict) -> bool:
+        duration = int(item.get("duration") or 0)
+        views = int(item.get("view_count") or 0)
+        likes = int(item.get("like_count") or 0)
+        has_subs = bool(item.get("subtitles"))
+        if min_duration is not None and duration < min_duration * 60:
+            return False
+        if max_duration is not None and duration > max_duration * 60:
+            return False
+        if min_views is not None and views < min_views:
+            return False
+        if min_likes is not None and likes < min_likes:
+            return False
+        if max_likes is not None and likes > max_likes:
+            return False
+        if subtitle_state == "has_subs" and not has_subs:
+            return False
+        if subtitle_state == "no_subs" and has_subs:
+            return False
+        return True
+
+    filtered = [item for item in items if keep(item)]
+    reverse = order.lower() == "desc"
+
+    def sort_key(item: dict) -> Any:
+        if sort_by == "title":
+            return (str(item.get("title") or "").lower(), item.get("playlist_index") or 0)
+        if sort_by == "uploader":
+            return (str(item.get("uploader") or "").lower(), item.get("playlist_index") or 0)
+        if sort_by == "duration":
+            return (int(item.get("duration") or 0), item.get("playlist_index") or 0)
+        if sort_by == "view_count":
+            return (int(item.get("view_count") or 0), item.get("playlist_index") or 0)
+        if sort_by == "like_count":
+            return (int(item.get("like_count") or 0), item.get("playlist_index") or 0)
+        return int(item.get("playlist_index") or 0)
+
+    filtered.sort(key=sort_key, reverse=reverse)
+    start = page * limit
+    return {
+        "items": filtered[start:start + limit],
+        "total": len(filtered),
+        "page": page,
+        "limit": limit,
+    }
+
+
+def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
+    try:
+        db.inquiry_update(inquiry_id, status="building", phase="checking_video_ids",
+                          detail="Checking current playlist or channel video IDs")
+        info = _yt_dlp_info(url, extract_flat="in_playlist")
+        src_type = str(info.get("_type") or "video")
+
+        if src_type not in ("playlist", "channel"):
+            video_info = _yt_dlp_info(url)
+            row = _sanitize_preview_entry(video_info, fallback_index=1)
+            if not row:
+                raise ValueError("Unsupported or unavailable video")
+            db.upsert_preview_source(url, "video", video_info.get("title"),
+                                     video_info.get("uploader") or video_info.get("channel"), 1)
+            db.upsert_preview_item(url, row)
+            db.delete_preview_items_not_in(url, [row["url"]])
+            db.inquiry_update(
+                inquiry_id,
+                source_type="video",
+                title=row.get("title"),
+                uploader=row.get("uploader"),
+                total_count=1,
+                processed_count=1,
+                status="done",
+                phase="ready",
+                detail="Preview ready",
+                error_msg="",
+            )
+            threading.Timer(2.0, db.inquiry_delete, args=(inquiry_id,)).start()
+            return
+
+        entries = [e for e in list(info.get("entries") or []) if _is_supported_playlist_entry(e)]
+        db.upsert_preview_source(url, src_type, info.get("title"), info.get("uploader") or info.get("channel"), len(entries))
+        cached_items = {item["url"]: item for item in db.get_preview_items(url)}
+        current_urls: list[str] = []
+        db.inquiry_update(
+            inquiry_id,
+            source_type=src_type,
+            title=info.get("title") or "",
+            uploader=info.get("uploader") or info.get("channel") or "",
+            total_count=len(entries),
+            processed_count=0,
+            status="building",
+            phase="checking_video_ids",
+            detail="Checking current playlist or channel video IDs",
+            error_msg="",
+        )
+
+        processed = 0
+        for idx, entry in enumerate(entries, start=1):
+            entry_url = str(entry.get("url") or "").strip()
+            if not entry_url:
+                continue
+            current_urls.append(entry_url)
+            cached = cached_items.get(entry_url)
+            if cached:
+                cached["playlist_index"] = idx
+                if _preview_item_is_fresh_today(cached):
+                    db.upsert_preview_item(url, cached)
+                else:
+                    try:
+                        item_info = _yt_dlp_info(entry_url)
+                    except Exception:
+                        item_info = None
+                    row = _sanitize_preview_entry(item_info, fallback_index=idx)
+                    if row:
+                        db.upsert_preview_item(url, row)
+                    else:
+                        db.upsert_preview_item(url, cached)
+            else:
+                try:
+                    item_info = _yt_dlp_info(entry_url)
+                except Exception:
+                    item_info = None
+                row = _sanitize_preview_entry(item_info, fallback_index=idx)
+                if row:
+                    db.upsert_preview_item(url, row)
+            processed += 1
+            db.inquiry_update(
+                inquiry_id,
+                processed_count=processed,
+                total_count=len(entries),
+                status="building",
+                phase="checking_video_ids",
+                detail=f"Checked {processed} of {len(entries)} video IDs",
+            )
+
+        db.delete_preview_items_not_in(url, current_urls)
+        db.inquiry_update(
+            inquiry_id,
+            processed_count=len(entries),
+            total_count=len(entries),
+            status="done",
+            phase="ready",
+            detail="Preview ready",
+            error_msg="",
+        )
+        threading.Timer(2.0, db.inquiry_delete, args=(inquiry_id,)).start()
+    except Exception as exc:
+        db.inquiry_update(
+            inquiry_id,
+            status="error",
+            phase="error",
+            detail="Inquiry failed",
+            error_msg=str(exc),
+        )
+
+
+def _preview_item_is_fresh_today(item: dict[str, Any] | None) -> bool:
+    if not item:
+        return False
+    updated_at = str(item.get("updated_at") or "").strip()
+    if not updated_at:
+        return False
+    try:
+        return datetime.fromisoformat(updated_at.replace(" ", "T")).date() == datetime.now().date()
+    except ValueError:
+        return False
+
+
+def _is_supported_playlist_entry(entry: dict | None) -> bool:
+    if not entry:
+        return False
+    title = str(entry.get("title") or "").strip().lower()
+    if title in {"[private video]", "[deleted video]"}:
+        return False
+    if "private video" in title or "deleted video" in title:
+        return False
+    availability = str(entry.get("availability") or "").strip().lower()
+    if availability in {"private", "subscriber_only", "needs_auth", "premium_only"}:
+        return False
+    url = str(entry.get("url") or "").strip()
+    if not url:
+        return False
+    return True
+
+
+def _yt_dlp_info(url: str, *, extract_flat: str | None = None) -> dict:
+    opts: dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+        "ignoreerrors": True,
+        "extractor_args": {"youtube": {
+            "player_client": ["android", "web"],
+        }},
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            )
+        },
+    }
+    if extract_flat:
+        opts["extract_flat"] = extract_flat
+    if _FFMPEG_LOCATION:
+        opts["ffmpeg_location"] = _FFMPEG_LOCATION
+    if _COOKIES_FILE and Path(_COOKIES_FILE).exists():
+        opts["cookiefile"] = _COOKIES_FILE
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        return ydl.extract_info(url, download=False) or {}
+
+
+def _sanitize_preview_entry(info: dict | None, *, fallback_index: int = 0) -> dict | None:
+    if not info:
+        return None
+    title = str(info.get("title") or "").strip()
+    if not title or "private video" in title.lower() or "deleted video" in title.lower():
+        return None
+    availability = str(info.get("availability") or "").strip().lower()
+    if availability in {"private", "subscriber_only", "needs_auth", "premium_only"}:
+        return None
+    url = str(info.get("webpage_url") or info.get("url") or "").strip()
+    if not url:
+        return None
+    subs = info.get("subtitles") or {}
+    auto_subs = info.get("automatic_captions") or {}
+    sub_langs = sorted(set(list(subs.keys()) + list(auto_subs.keys())))
+    return {
+        "url": url,
+        "title": title,
+        "thumbnail": info.get("thumbnail"),
+        "uploader": info.get("uploader") or info.get("channel"),
+        "duration": info.get("duration"),
+        "view_count": info.get("view_count"),
+        "like_count": info.get("like_count"),
+        "subtitles": sub_langs,
+        "playlist_index": int(info.get("playlist_index") or fallback_index),
+    }
+
+
+def _get_playlist_preview_entries(url: str) -> list[dict[str, Any]]:
+    return db.get_preview_items(url)
+
+
+def _ensure_playlist_preview_build(url: str, *, force_refresh: bool = False) -> None:
+    with _playlist_preview_lock:
+        cached = db.get_preview_items(url)
+        status = _playlist_preview_status.get(url)
+        if status and status.get("status") == "building":
+            return
+        if cached and not force_refresh:
+            _playlist_preview_status[url] = {
+                "status": "ready",
+                "processed": len(cached),
+                "total": len(cached),
+                "phase": "ready",
+                "detail": "Preview ready",
+                "error": None,
+            }
+            return
+        _playlist_preview_status[url] = {
+            "status": "building",
+            "processed": 0,
+            "total": 0,
+            "phase": "checking_video_ids",
+            "detail": "Checking current playlist or channel video IDs",
+            "error": None,
+        }
+
+    def _worker() -> None:
+        try:
+            flat_info = _yt_dlp_info(url, extract_flat="in_playlist")
+            entries = [e for e in list(flat_info.get("entries") or []) if _is_supported_playlist_entry(e)]
+            db.upsert_preview_source(
+                url,
+                str(flat_info.get("_type") or "playlist"),
+                flat_info.get("title"),
+                flat_info.get("uploader") or flat_info.get("channel"),
+                len(entries),
+            )
+            cached_items = {item["url"]: item for item in db.get_preview_items(url)}
+            with _playlist_preview_lock:
+                _playlist_preview_status[url] = {
+                    "status": "building",
+                    "processed": 0,
+                    "total": len(entries),
+                    "phase": "checking_video_ids",
+                    "detail": "Checking current playlist or channel video IDs",
+                    "error": None,
+                }
+
+            current_urls: list[str] = []
+            processed = 0
+            for idx, entry in enumerate(entries, start=1):
+                entry_url = str(entry.get("url") or "").strip()
+                if entry_url:
+                    current_urls.append(entry_url)
+                    cached = cached_items.get(entry_url)
+                    if cached:
+                        cached["playlist_index"] = idx
+                        db.upsert_preview_item(url, cached)
+                    else:
+                        try:
+                            info = _yt_dlp_info(entry_url)
+                        except Exception:
+                            info = None
+                        row = _sanitize_preview_entry(info, fallback_index=idx)
+                        if row:
+                            db.upsert_preview_item(url, row)
+                processed += 1
+                with _playlist_preview_lock:
+                    _playlist_preview_status[url] = {
+                        "status": "building",
+                        "processed": processed,
+                        "total": len(entries),
+                        "phase": "syncing_cache",
+                        "detail": "Checking cache, fetching missing metadata, and storing updates",
+                        "error": None,
+                    }
+
+            with _playlist_preview_lock:
+                _playlist_preview_status[url] = {
+                    "status": "building",
+                    "processed": len(entries),
+                    "total": len(entries),
+                    "phase": "finalizing",
+                    "detail": "Removing videos no longer present and finalizing results",
+                    "error": None,
+                }
+            db.delete_preview_items_not_in(url, current_urls)
+            with _playlist_preview_lock:
+                _playlist_preview_status[url] = {
+                    "status": "ready",
+                    "processed": len(entries),
+                    "total": len(entries),
+                    "phase": "ready",
+                    "detail": "Preview ready",
+                    "error": None,
+                }
+        except Exception as exc:
+            with _playlist_preview_lock:
+                _playlist_preview_status[url] = {
+                    "status": "error",
+                    "processed": 0,
+                    "total": 0,
+                    "phase": "error",
+                    "detail": "Preview build failed",
+                    "error": str(exc),
+                }
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+async def _enqueue_job(
+    *,
+    loop: asyncio.AbstractEventLoop,
+    url: str,
+    mode: str,
+    quality: str,
+    target_path: str,
+    subtitles: list[str] | None,
+) -> tuple[str | None, dict | None]:
+    y_id = extract_youtube_id(url)
+    if y_id:
+        existing = await loop.run_in_executor(None, db.get_media_by_youtube_id, y_id)
+        if existing:
+            log("⚠️", f"Duplicate detected: youtube_id={y_id}")
+            return None, existing
+
+    job_id = str(uuid4())
+    job = DownloadJob(job_id)
+    _jobs[job_id] = job
+
+    await loop.run_in_executor(
+        None, db.queue_insert, job_id, url, mode, quality, target_path
+    )
+    log("✅", f"Job {job_id[:8]} inserted into queue")
+    asyncio.create_task(
+        _run_job(job, url, mode, quality, target_path, _normalize_subtitles(subtitles))
+    )
+    return job_id, None
 
 
 @app.post("/api/jobs")
 async def create_job(req: JobRequest) -> dict:
     loop = asyncio.get_event_loop()
     log("📥", f"POST /api/jobs — url={req.url[:60]!r} mode={req.mode}")
-
-    y_id = extract_youtube_id(req.url)
-    if y_id:
-        existing = await loop.run_in_executor(None, db.get_media_by_youtube_id, y_id)
-        if existing:
-            log("⚠️", f"Duplicate detected: youtube_id={y_id}")
-            raise HTTPException(status_code=409, detail={"duplicate": True, "media": existing})
-
-    job_id = str(uuid4())
-    job    = DownloadJob(job_id)
-    _jobs[job_id] = job
-
-    await loop.run_in_executor(
-        None, db.queue_insert, job_id, req.url, req.mode, req.quality, req.target_path
+    job_id, existing = await _enqueue_job(
+        loop=loop,
+        url=req.url,
+        mode=req.mode,
+        quality=req.quality,
+        target_path=req.target_path,
+        subtitles=req.subtitles,
     )
-    log("✅", f"Job {job_id[:8]} inserted into queue")
-    asyncio.create_task(
-        _run_job(job, req.url, req.mode, req.quality, req.target_path, req.subtitles)
-    )
+    if existing:
+        raise HTTPException(status_code=409, detail={"duplicate": True, "media": existing})
     return {"job_id": job_id}
+
+
+@app.post("/api/playlist_jobs")
+async def create_playlist_jobs(req: PlaylistJobRequest) -> dict:
+    loop = asyncio.get_event_loop()
+    log("📥", f"POST /api/playlist_jobs — url={req.playlist_url[:60]!r} mode={req.mode}")
+
+    try:
+        info = await loop.run_in_executor(None, _fetch_info, req.playlist_url)
+    except Exception as exc:
+        log("❌", f"POST /api/playlist_jobs failed while fetching playlist: {exc}")
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if info.get("_type") not in ("playlist", "channel"):
+        raise HTTPException(status_code=400, detail="URL is not a playlist or channel")
+
+    excluded_urls = {str(url or "").strip() for url in req.excluded_urls if str(url or "").strip()}
+    global_subtitles = _normalize_subtitles(req.global_subtitles)
+    individual_subtitles = {
+        str(url).strip(): _normalize_subtitles(langs)
+        for url, langs in req.individual_subtitles.items()
+        if str(url).strip()
+    }
+
+    queued_job_ids: list[str] = []
+    skipped_duplicates = 0
+    skipped_excluded = 0
+
+    for entry in info.get("entries") or []:
+        if not _is_supported_playlist_entry(entry):
+            continue
+        entry_url = str((entry or {}).get("url") or "").strip()
+        if not entry_url:
+            continue
+        if entry_url in excluded_urls:
+            skipped_excluded += 1
+            continue
+
+        subtitles = individual_subtitles.get(entry_url, global_subtitles)
+        job_id, existing = await _enqueue_job(
+            loop=loop,
+            url=entry_url,
+            mode=req.mode,
+            quality=req.quality,
+            target_path=req.target_path,
+            subtitles=subtitles,
+        )
+        if existing:
+            skipped_duplicates += 1
+            continue
+        if job_id:
+            queued_job_ids.append(job_id)
+
+    return {
+        "queued": len(queued_job_ids),
+        "skipped_duplicates": skipped_duplicates,
+        "skipped_excluded": skipped_excluded,
+        "job_ids": queued_job_ids,
+    }
+
+
+@app.post("/api/inquiries")
+async def create_inquiry(req: InquiryRequest) -> dict:
+    loop = asyncio.get_event_loop()
+    source_url = str(req.url or "").strip()
+    existing = await loop.run_in_executor(None, db.inquiry_get_by_source_url, source_url)
+    if existing and existing.get("status") in {"queued", "building", "done"}:
+        return existing
+
+    inquiry_id = f"iq_{uuid4().hex[:8]}"
+    await loop.run_in_executor(None, db.inquiry_insert, inquiry_id, req.url)
+    threading.Thread(target=_run_inquiry_sync, args=(inquiry_id, req.url), daemon=True).start()
+    row = await loop.run_in_executor(None, db.inquiry_get, inquiry_id)
+    return row or {"inquiry_id": inquiry_id, "source_url": req.url}
+
+
+@app.get("/api/inquiries/{inquiry_id}")
+async def get_inquiry(inquiry_id: str) -> dict:
+    loop = asyncio.get_event_loop()
+    row = await loop.run_in_executor(None, db.inquiry_get, inquiry_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Inquiry not found")
+    return row
+
+
+@app.delete("/api/inquiries/{inquiry_id}")
+async def delete_inquiry(inquiry_id: str) -> dict:
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, db.inquiry_delete, inquiry_id)
+    return {"deleted": inquiry_id}
 
 
 @app.delete("/api/jobs/{job_id}")
@@ -764,29 +1270,58 @@ async def ws_zip_queue(ws: WebSocket) -> None:
         reader_task.cancel()
 
 
+@app.websocket("/ws/inquiries")
+async def ws_inquiries(ws: WebSocket) -> None:
+    await ws.accept()
+    log("🔌", "WS /ws/inquiries — client connected")
+    page = 0
+    limit = 10
+    last_snapshot: dict[str, dict] = {}
+    last_total = -1
+
+    async def _reader() -> None:
+        nonlocal page, limit, last_snapshot, last_total
+        try:
+            while True:
+                data = await ws.receive_json()
+                if "page" in data:
+                    page = int(data["page"])
+                    limit = int(data.get("limit", limit))
+                    last_snapshot = {}
+                    last_total = -1
+        except Exception:
+            pass
+
+    reader_task = asyncio.create_task(_reader())
+    loop = asyncio.get_event_loop()
+    try:
+        while True:
+            rows, total = await loop.run_in_executor(None, db.inquiry_list, page, limit)
+            current = {r["inquiry_id"]: r for r in rows}
+            changed = [r for jid, r in current.items() if last_snapshot.get(jid) != r]
+            removed = [jid for jid in last_snapshot if jid not in current]
+            if changed or removed or total != last_total:
+                await ws.send_json({
+                    "type": "update",
+                    "total": total,
+                    "page": page,
+                    "limit": limit,
+                    "inquiries": changed,
+                    "removed": removed,
+                })
+                last_snapshot = current
+                last_total = total
+            await asyncio.sleep(0.4)
+    except Exception:
+        log("🔌", "WS /ws/inquiries — client disconnected")
+    finally:
+        reader_task.cancel()
+
+
 # ── Info ───────────────────────────────────────────────────────────────────────
 def _fetch_info(url: str) -> dict:
     log("🔍", f"_fetch_info url={url[:60]!r}")
-    opts = {
-        "quiet": True, "no_warnings": True,
-        "extract_flat": "in_playlist", "ignoreerrors": True,
-        "extractor_args": {"youtube": {
-            "player_client": ["android", "web"],
-        }},
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
-        },
-    }
-    if _FFMPEG_LOCATION:
-        opts["ffmpeg_location"] = _FFMPEG_LOCATION
-    if _COOKIES_FILE and Path(_COOKIES_FILE).exists():
-        opts["cookiefile"] = _COOKIES_FILE
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        result = ydl.extract_info(url, download=False) or {}
+    result = _yt_dlp_info(url, extract_flat="in_playlist")
     log("✅", f"_fetch_info complete — type={result.get('_type','video')!r} title={result.get('title','?')!r}")
     return result
 
@@ -803,7 +1338,7 @@ async def video_info(url: str) -> dict:
 
     url_type = info.get("_type")
     if url_type in ("playlist", "channel"):
-        entries = list(info.get("entries") or [])
+        entries = [e for e in list(info.get("entries") or []) if _is_supported_playlist_entry(e)]
         return {
             "type":     url_type,
             "title":    info.get("title"),
@@ -825,8 +1360,170 @@ async def video_info(url: str) -> dict:
         "thumbnail":  info.get("thumbnail"),
         "uploader":   info.get("uploader") or info.get("channel"),
         "view_count": info.get("view_count"),
+        "like_count": info.get("like_count"),
         "subtitles":  sub_langs,
     }
+
+
+@app.get("/api/inquiries/{inquiry_id}/preview")
+async def inquiry_preview(
+    inquiry_id: str,
+    page: int = 0,
+    limit: int = 10,
+    sort_by: str = "playlist_index",
+    order: str = "asc",
+    min_duration: int | None = None,
+    max_duration: int | None = None,
+    min_views: int | None = None,
+    min_likes: int | None = None,
+    max_likes: int | None = None,
+    subtitle_state: str | None = None,
+) -> dict:
+    loop = asyncio.get_event_loop()
+    req_page = max(0, int(page))
+    req_limit = max(1, min(int(limit), 50))
+
+    def _build() -> dict:
+        inquiry = db.inquiry_get(inquiry_id)
+        if not inquiry:
+            return {"missing": True}
+        if inquiry.get("status") == "building" or inquiry.get("status") == "queued":
+            return {
+                "status_only": True,
+                "status": {
+                    "status": inquiry.get("status"),
+                    "processed": inquiry.get("processed_count") or 0,
+                    "total": inquiry.get("total_count") or 0,
+                    "phase": inquiry.get("phase") or "",
+                    "detail": inquiry.get("detail") or "",
+                    "error": inquiry.get("error_msg") or "",
+                },
+            }
+        if inquiry.get("status") == "error":
+            return {
+                "status_only": True,
+                "status": {
+                    "status": "error",
+                    "processed": inquiry.get("processed_count") or 0,
+                    "total": inquiry.get("total_count") or 0,
+                    "phase": inquiry.get("phase") or "",
+                    "detail": inquiry.get("detail") or "",
+                    "error": inquiry.get("error_msg") or "",
+                },
+            }
+        cached = db.get_preview_items(inquiry["source_url"])
+        if not cached:
+            return {
+                "status_only": False,
+                "items": [],
+                "total": 0,
+                "page": req_page,
+                "limit": req_limit,
+            }
+
+        items = list(cached)
+
+        def keep(item: dict) -> bool:
+            duration = int(item.get("duration") or 0)
+            views = int(item.get("view_count") or 0)
+            likes = int(item.get("like_count") or 0)
+            has_subs = bool(item.get("subtitles"))
+            if min_duration is not None and duration < min_duration * 60:
+                return False
+            if max_duration is not None and duration > max_duration * 60:
+                return False
+            if min_views is not None and views < min_views:
+                return False
+            if min_likes is not None and likes < min_likes:
+                return False
+            if max_likes is not None and likes > max_likes:
+                return False
+            if subtitle_state == "has_subs" and not has_subs:
+                return False
+            if subtitle_state == "no_subs" and has_subs:
+                return False
+            return True
+
+        result = _sort_and_filter_preview_items(
+            items,
+            sort_by=sort_by,
+            order=order,
+            min_duration=min_duration,
+            max_duration=max_duration,
+            min_views=min_views,
+            min_likes=min_likes,
+            max_likes=max_likes,
+            subtitle_state=subtitle_state,
+            page=req_page,
+            limit=req_limit,
+        )
+        return {
+            "status_only": False,
+            **result,
+            "inquiry": inquiry,
+        }
+    result = await loop.run_in_executor(None, _build)
+    if result.get("missing"):
+        raise HTTPException(status_code=404, detail="Inquiry not found")
+    if result.get("status_only"):
+        status = result.get("status") or {}
+        code = 202 if status.get("status") == "building" else 500 if status.get("status") == "error" else 202
+        return JSONResponse(
+            status_code=code,
+            content={
+                "status": status.get("status", "building"),
+                "processed": status.get("processed", 0),
+                "total": status.get("total", 0),
+                "phase": status.get("phase", "building"),
+                "detail": status.get("detail"),
+                "error": status.get("error"),
+            },
+        )
+    return result
+
+
+@app.get("/api/preview")
+async def preview_by_url(
+    url: str,
+    page: int = 0,
+    limit: int = 10,
+    sort_by: str = "playlist_index",
+    order: str = "asc",
+    min_duration: int | None = None,
+    max_duration: int | None = None,
+    min_views: int | None = None,
+    min_likes: int | None = None,
+    max_likes: int | None = None,
+    subtitle_state: str | None = None,
+) -> dict:
+    loop = asyncio.get_event_loop()
+    req_page = max(0, int(page))
+    req_limit = max(1, min(int(limit), 50))
+
+    def _build() -> dict:
+        cached = db.get_preview_items(url)
+        if not cached:
+            return {
+                "items": [],
+                "total": 0,
+                "page": req_page,
+                "limit": req_limit,
+            }
+        return _sort_and_filter_preview_items(
+            list(cached),
+            sort_by=sort_by,
+            order=order,
+            min_duration=min_duration,
+            max_duration=max_duration,
+            min_views=min_views,
+            min_likes=min_likes,
+            max_likes=max_likes,
+            subtitle_state=subtitle_state,
+            page=req_page,
+            limit=req_limit,
+        )
+
+    return await loop.run_in_executor(None, _build)
 
 
 # ── Media library ──────────────────────────────────────────────────────────────

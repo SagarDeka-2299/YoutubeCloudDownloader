@@ -1355,11 +1355,47 @@
         <div class="i-title" id="i-title"></div>
         <div class="i-meta" id="i-meta"></div>
         <div id="i-subs" style="margin-top: 0.5rem; display: none; gap:0.4rem; flex-wrap:wrap;"></div>
+        <div id="i-preview-controls" class="sort-row" style="display:none; margin-top:0.6rem; margin-bottom:0;">
+          <button class="btn-g btn-xs" onclick="openPreviewFilterModal()" style="padding:0.4rem 0.6rem;">🔍 Filter</button>
+          <label style="margin-left:auto; align-self:center;">Sort by</label>
+          <select id="preview-sort-field" onchange="applyPreviewFilters()" style="min-width:150px; max-width:210px">
+            <option value="playlist_index">Playlist order</option>
+            <option value="title">Title</option>
+            <option value="uploader">Channel</option>
+            <option value="duration">Duration</option>
+            <option value="view_count">Views</option>
+            <option value="like_count">Likes</option>
+          </select>
+          <button class="ord-btn asc" id="preview-ord-btn" onclick="togglePreviewOrder()">↓ Desc</button>
+        </div>
       </div>
     </div>
     
+    <div id="inquiry-queue-card" class="card" style="margin-top:0.65rem; margin-bottom:1rem;">
+      <div class="card-hdr">
+        <span class="card-title">🧾 Inquiry Queue</span>
+        <span id="inquiry-queue-count" style="font-size:.76rem;color:var(--m)"></span>
+      </div>
+      <div class="queue-list" id="inquiry-queue-list">
+        <div class="empty">
+          <div class="empty-icon">🧾</div>
+          <div>No inquiries yet</div>
+        </div>
+      </div>
+      <div class="pager" id="inquiry-queue-pager" style="display:none">
+        <button class="pager-btn" id="iq-prev" onclick="inquiryPrev()">‹</button>
+        <span class="pager-info" id="inquiry-pager-info"></span>
+        <button class="pager-btn" id="iq-next" onclick="inquiryNext()">›</button>
+      </div>
+    </div>
+
     <!-- Playlist box -->
     <div id="playlist-box" style="display:none; width:100%; margin-top:0.65rem; margin-bottom:1rem; flex-direction:column; gap:0.5rem;">
+    </div>
+    <div class="pager" id="playlist-pager" style="display:none; margin-top:-0.25rem; margin-bottom:1rem;">
+      <button class="pager-btn" id="playlist-prev" onclick="setPlaylistPageDelta(-1)">‹</button>
+      <span class="pager-info" id="playlist-pager-info"></span>
+      <button class="pager-btn" id="playlist-next" onclick="setPlaylistPageDelta(1)">›</button>
     </div>
   </div>
 
@@ -1487,6 +1523,53 @@
 
   <div id="toasts"></div>
 
+  <div id="preview-filter-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:1000; align-items:center; justify-content:center;">
+    <div class="card" style="width:90%; max-width:400px; padding:1.5rem; background:var(--s2); margin-bottom:0;">
+      <h3 style="margin-bottom:1rem; font-size:1rem;">Preview Filters</h3>
+      <div class="filter-bar" style="display:flex; flex-direction:column; background:transparent; border:none; padding:0; margin:0; gap:0.6rem;">
+        <div style="display:flex; gap:0.5rem; width:100%;">
+          <div class="filter-group" style="flex:1;">
+            <label>Min dur (m)</label>
+            <input type="number" id="pf-dur-min" placeholder="e.g. 5" min="0" style="width:100%;"/>
+          </div>
+          <div class="filter-group" style="flex:1;">
+            <label>Max dur (m)</label>
+            <input type="number" id="pf-dur-max" placeholder="e.g. 60" min="0" style="width:100%;"/>
+          </div>
+        </div>
+        <div style="display:flex; gap:0.5rem; width:100%;">
+          <div class="filter-group" style="flex:1;">
+            <label>Min views</label>
+            <input type="number" id="pf-views-min" placeholder="e.g. 10000" min="0" style="width:100%;"/>
+          </div>
+          <div class="filter-group" style="flex:1;">
+            <label>Min likes</label>
+            <input type="number" id="pf-likes-min" placeholder="e.g. 500" min="0" style="width:100%;"/>
+          </div>
+        </div>
+        <div style="display:flex; gap:0.5rem; width:100%;">
+          <div class="filter-group" style="flex:1;">
+            <label>Max likes</label>
+            <input type="number" id="pf-likes-max" placeholder="e.g. 5000" min="0" style="width:100%;"/>
+          </div>
+          <div class="filter-group" style="flex:1;">
+            <label>Subtitle state</label>
+            <select id="pf-sub-state" style="width:100%;">
+              <option value="">All items</option>
+              <option value="has_subs">Has subtitles</option>
+              <option value="no_subs">No subtitles yet</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:1.5rem;">
+        <button class="btn-ghost btn-xs" onclick="closePreviewFilterModal()">Cancel</button>
+        <button class="btn-ghost btn-xs" onclick="clearPreviewFilters()">Clear</button>
+        <button class="btn-p btn-xs" onclick="applyPreviewFilterModal()">Apply</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Folder picker modal ───────────────────────────────────────────────── -->
   <div class="modal-overlay" id="folder-modal">
     <div class="modal">
@@ -1545,10 +1628,15 @@
     let queuePage = 0, queueTotal = 0;
     let queueWs = null;
     let wsZip = null;
+    let inquiryWs = null;
     // job_id → row data (source of truth for rendered cards)
     const queueJobs = new Map();
     const zipJobs = new Map();
+    const inquiryJobs = new Map();
     let zipPage = 0, zipTotal = 0;
+    let inquiryPage = 0, inquiryTotal = 0;
+    let currentInquiryId = '';
+    let currentInquiryStatus = '';
     let fpType = 'audio', fpPath = '', fpCurrentPath = '';
     let _wsReconnectBanner = null;
 
@@ -1611,6 +1699,9 @@
     function esc(s) {
       return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
+    function normalizeInquiryUrl(url) {
+      return String(url || '').trim().replace(/\/+$/, '');
+    }
     function toast(msg, type = 'ok') {
       const c = document.getElementById('toasts'), t = document.createElement('div');
       t.className = 'toast ' + type; t.textContent = msg; c.appendChild(t);
@@ -1635,302 +1726,632 @@
 
     // ── Info fetch ─────────────────────────────────────────────────────────────
     let cancelInfoFetches = false;
-    // Global variables to store subtitle & playlist state
     let lastFetchedUrl = '';
-    let selectedSubs = new Set(['en']);
+    let currentPlaylistUrl = '';
+    let currentPlaylistType = 'video';
     let currentPlaylistEntries = [];
-    let selectedPlaylistIndices = new Set();
-    
+    let currentPreviewTotal = 0;
+    let excludedPlaylistUrls = new Set();
+    let draftGlobalSubtitleSelection = [];
+    let appliedGlobalSubtitleSelection = [];
+    let subtitleOverrides = new Map();
+    let knownSubtitleLangs = new Set();
+    let playlistPage = 0;
+    let playlistFetchToken = 0;
+    let previewMinDuration = '';
+    let previewMaxDuration = '';
+    let previewMinViews = '';
+    let previewMinLikes = '';
+    let previewMaxLikes = '';
+    let previewSubtitleState = '';
+    let previewSortField = 'playlist_index';
+    let previewSortOrder = 'asc';
+    let previewRequestToken = 0;
+    const playlistPageSize = 10;
+    const subtitleUiState = new Map();
+    const langNames = new Intl.DisplayNames(['en'], { type: 'language' });
+
+    function normalizeSubtitleSelection(langs) {
+      const seen = new Set();
+      const out = [];
+      (langs || []).forEach(lang => {
+        const value = String(lang || '').trim();
+        if (!value || seen.has(value)) return;
+        seen.add(value);
+        out.push(value);
+      });
+      return out.sort((a, b) => a.localeCompare(b));
+    }
+
+    function subtitleSelectionsEqual(a, b) {
+      const aa = normalizeSubtitleSelection(a);
+      const bb = normalizeSubtitleSelection(b);
+      return aa.length === bb.length && aa.every((value, index) => value === bb[index]);
+    }
+
+    function getLangName(code) {
+      try { return langNames.of(code) || code; } catch (_) { return code; }
+    }
+
+    function getEntrySubtitleSelection(entry) {
+      return normalizeSubtitleSelection(subtitleOverrides.get(entry.url) || appliedGlobalSubtitleSelection);
+    }
+
+    function updateEntrySubtitleSelection(url, langs) {
+      const next = normalizeSubtitleSelection(langs);
+      if (subtitleSelectionsEqual(next, appliedGlobalSubtitleSelection)) subtitleOverrides.delete(url);
+      else subtitleOverrides.set(url, next);
+      renderVisibleSubtitleSelectors();
+    }
+
+    function setGlobalSubtitleSelection(langs) {
+      draftGlobalSubtitleSelection = normalizeSubtitleSelection(langs);
+      renderGlobalSubtitleSelector();
+    }
+
+    function applyGlobalSubtitleSelection() {
+      appliedGlobalSubtitleSelection = [...draftGlobalSubtitleSelection];
+      subtitleOverrides.clear();
+      renderGlobalSubtitleSelector();
+      renderVisibleSubtitleSelectors();
+    }
+
+    function getCurrentPageEntries() {
+      return currentPlaylistEntries.map((entry, index) => ({ entry, index }));
+    }
+
+    function closeSubtitleMenus() {
+      document.querySelectorAll('.subs-menu').forEach(menu => menu.style.display = 'none');
+      subtitleUiState.forEach(state => {
+        state.menuOpen = false;
+        state.menuScrollTop = 0;
+      });
+    }
+
+    if (!window._subtitleMenuBound) {
+      document.addEventListener('click', (e) => {
+        if (e.target.closest('.subs-wrap')) return;
+        closeSubtitleMenus();
+      });
+      window._subtitleMenuBound = true;
+    }
+
+    function renderSubtitleSelector(containerId, langs, selected, opts = {}) {
+      const c = document.getElementById(containerId);
+      if (!c) return;
+
+      const availableLangs = normalizeSubtitleSelection([...(langs || []), ...(selected || [])]);
+      const currentSelected = normalizeSubtitleSelection(selected);
+      const previousState = subtitleUiState.get(containerId);
+      const menuOpen = previousState?.menuOpen || false;
+      const menuScrollTop = previousState?.menuScrollTop || 0;
+      const extraAction = opts.extraAction || null;
+      const appliedSelected = normalizeSubtitleSelection(opts.appliedSelected || []);
+      subtitleUiState.set(containerId, {
+        langs: availableLangs,
+        selected: currentSelected,
+        onChange: opts.onChange || (() => {}),
+        extraAction,
+        appliedSelected,
+        menuOpen,
+        menuScrollTop,
+      });
+
+      c.style.display = 'block';
+      c.style.alignItems = 'normal';
+      const chips = currentSelected.length
+        ? currentSelected.map(lang => `
+            <div style="display:inline-flex; align-items:center; gap:0.3rem; padding:0.15rem 0.4rem; background:rgba(124,58,237,0.15); border:1px solid rgba(124,58,237,0.3); border-radius:4px; color:var(--t); font-size:0.7rem; font-weight:600;">
+              <span>${esc(getLangName(lang))}</span>
+              <span onclick="window._removeSubtitleChip('${containerId}', '${esc(lang)}')" style="cursor:pointer; opacity:0.6; padding:0 0.2rem;">×</span>
+            </div>
+          `).join('')
+        : `<span style="font-size:0.72rem; color:var(--m);">None selected</span>`;
+      const appliedChips = appliedSelected.length
+        ? appliedSelected.map(lang => `
+            <div style="display:inline-flex; align-items:center; gap:0.3rem; padding:0.15rem 0.4rem; background:rgba(34,197,94,0.14); border:1px solid rgba(34,197,94,0.32); border-radius:4px; color:#dcfce7; font-size:0.7rem; font-weight:600;">
+              <span>${esc(getLangName(lang))}</span>
+            </div>
+          `).join('')
+        : `<span style="font-size:0.72rem; color:var(--m);">None selected</span>`;
+
+      const list = availableLangs.length
+        ? availableLangs.map(lang => `
+            <label style="display:flex; align-items:center; gap:0.4rem; cursor:pointer; color:var(--t); padding:0.2rem; border-radius:4px; font-size:0.75rem;">
+              <input type="checkbox" value="${esc(lang)}" ${currentSelected.includes(lang) ? 'checked' : ''}
+                onchange="window._setSubtitleChecked('${containerId}', '${esc(lang)}', this.checked)">
+              <span>${esc(getLangName(lang))} (${esc(lang)})</span>
+            </label>
+          `).join('')
+        : `<div style="font-size:0.74rem; color:var(--m);">Subtitle languages will appear as info loads.</div>`;
+
+      c.innerHTML = `
+        <div style="display:flex; flex-direction:column; gap:0.4rem; width:100%; position:relative;">
+          <div style="display:flex; align-items:center; gap:0.4rem; flex-wrap:wrap;">
+            <span style="font-size:0.77rem; color:var(--m); font-weight:500;">${esc(opts.label || 'Subtitles:')}</span>
+            <div class="subs-wrap" style="position:relative; max-width:250px;">
+              <button type="button" class="btn-g btn-xs" style="width:100%; justify-content:space-between; min-width:140px;"
+                onclick="window._toggleSubtitleMenu('${containerId}'); event.stopPropagation();">
+                Select Languages <span>▼</span>
+              </button>
+              <div id="${containerId}-menu" class="subs-menu" style="display:${menuOpen ? 'block' : 'none'}; position:absolute; top:100%; left:0; width:100%; background:var(--s2); border:1px solid var(--b2); border-radius:var(--rx); padding:0.5rem; z-index:100; max-height:200px; overflow-y:auto; box-shadow:0 4px 12px rgba(0,0,0,0.5);">
+                <div style="display:flex; justify-content:space-between; gap:0.3rem; margin-bottom:0.4rem; border-bottom:1px solid var(--b1); padding-bottom:0.3rem; flex-wrap:wrap;">
+                  <button type="button" class="btn-ghost btn-xs" onclick="window._setAllSubtitleChecks('${containerId}', true); event.stopPropagation();">All</button>
+                  <button type="button" class="btn-ghost btn-xs" onclick="window._setAllSubtitleChecks('${containerId}', false); event.stopPropagation();">None</button>
+                </div>
+                <div id="${containerId}-list" style="display:flex; flex-direction:column; gap:0.2rem;">${list}</div>
+              </div>
+            </div>
+            ${extraAction ? `<button type="button" class="btn-p btn-xs" onclick="window._runSubtitleExtraAction('${containerId}')">${esc(extraAction.label)}</button>` : ''}
+          </div>
+          <div id="${containerId}-chips" style="display:flex; flex-wrap:wrap; gap:0.3rem; margin-top:0.2rem;">${chips}</div>
+          ${extraAction ? `<div style="display:flex; flex-direction:column; gap:0.25rem; margin-top:0.2rem;">
+            <span style="font-size:0.72rem; color:var(--green); font-weight:600;">Applied to cards</span>
+            <div style="display:flex; flex-wrap:wrap; gap:0.3rem;">${appliedChips}</div>
+          </div>` : ''}
+        </div>
+      `;
+      const menu = document.getElementById(`${containerId}-menu`);
+      if (menu && menuOpen) menu.scrollTop = menuScrollTop;
+    }
+
+    window._toggleSubtitleMenu = (containerId) => {
+      const state = subtitleUiState.get(containerId);
+      const menu = document.getElementById(`${containerId}-menu`);
+      if (!menu) return;
+      const nextState = menu.style.display !== 'block';
+      closeSubtitleMenus();
+      menu.style.display = nextState ? 'block' : 'none';
+      if (state) {
+        state.menuOpen = nextState;
+        if (nextState) menu.scrollTop = state.menuScrollTop || 0;
+      }
+    };
+
+    window._setSubtitleChecked = (containerId, lang, checked) => {
+      const state = subtitleUiState.get(containerId);
+      if (!state) return;
+      const menu = document.getElementById(`${containerId}-menu`);
+      if (menu) state.menuScrollTop = menu.scrollTop;
+      const next = new Set(state.selected);
+      if (checked) next.add(lang);
+      else next.delete(lang);
+      state.onChange(normalizeSubtitleSelection([...next]));
+    };
+
+    window._setAllSubtitleChecks = (containerId, all) => {
+      const state = subtitleUiState.get(containerId);
+      if (!state) return;
+      const menu = document.getElementById(`${containerId}-menu`);
+      if (menu) state.menuScrollTop = menu.scrollTop;
+      state.onChange(all ? [...state.langs] : []);
+    };
+
+    window._removeSubtitleChip = (containerId, lang) => {
+      const state = subtitleUiState.get(containerId);
+      if (!state) return;
+      const menu = document.getElementById(`${containerId}-menu`);
+      if (menu) state.menuScrollTop = menu.scrollTop;
+      state.onChange(state.selected.filter(item => item !== lang));
+    };
+
+    window._runSubtitleExtraAction = (containerId) => {
+      const state = subtitleUiState.get(containerId);
+      if (!state?.extraAction?.onClick) return;
+      state.extraAction.onClick(state.selected);
+    };
+
+    function renderGlobalSubtitleSelector() {
+      const label = currentPlaylistType === 'video' ? 'Subtitles:' : 'Global subtitles:';
+      renderSubtitleSelector('i-subs', [...knownSubtitleLangs], draftGlobalSubtitleSelection, {
+        label,
+        onChange: (langs) => {
+          setGlobalSubtitleSelection(langs);
+          if (currentPlaylistType === 'video') {
+            appliedGlobalSubtitleSelection = [...draftGlobalSubtitleSelection];
+          }
+        },
+        extraAction: currentPlaylistType === 'video' ? null : {
+          label: 'Apply to all',
+          onClick: () => applyGlobalSubtitleSelection(),
+        },
+        appliedSelected: currentPlaylistType === 'video' ? [] : appliedGlobalSubtitleSelection,
+      });
+    }
+
+    function renderVisibleSubtitleSelectors() {
+      if (currentPlaylistType === 'video') {
+        renderGlobalSubtitleSelector();
+        return;
+      }
+      getCurrentPageEntries().forEach(({ entry, index }) => {
+        renderSubtitleSelector(`pl-subs-${index}`, entry.info?.subtitles || [], getEntrySubtitleSelection(entry), {
+          label: 'Subtitles:',
+          onChange: (langs) => updateEntrySubtitleSelection(entry.url, langs),
+        });
+      });
+    }
+
+    function updatePreviewControls() {
+      const controls = document.getElementById('i-preview-controls');
+      if (!controls) return;
+      controls.style.display = currentPlaylistType === 'video' ? 'none' : 'flex';
+      const sortField = document.getElementById('preview-sort-field');
+      if (sortField) sortField.value = previewSortField;
+      const btn = document.getElementById('preview-ord-btn');
+      if (!btn) return;
+      btn.textContent = previewSortOrder === 'desc' ? '↓ Desc' : '↑ Asc';
+      btn.classList.toggle('asc', previewSortOrder === 'desc');
+    }
+
+    function hidePreviewList() {
+      currentPlaylistEntries = [];
+      currentPreviewTotal = 0;
+      document.getElementById('playlist-box').style.display = 'none';
+      document.getElementById('playlist-pager').style.display = 'none';
+    }
+
+    function applyPreviewFilters() {
+      previewSortField = document.getElementById('preview-sort-field').value || 'playlist_index';
+      playlistPage = 0;
+      fetchPreviewPage();
+    }
+
+    function togglePreviewOrder() {
+      previewSortOrder = previewSortOrder === 'desc' ? 'asc' : 'desc';
+      updatePreviewControls();
+      playlistPage = 0;
+      fetchPreviewPage();
+    }
+
+    function openPreviewFilterModal() {
+      document.getElementById('pf-dur-min').value = previewMinDuration;
+      document.getElementById('pf-dur-max').value = previewMaxDuration;
+      document.getElementById('pf-views-min').value = previewMinViews;
+      document.getElementById('pf-likes-min').value = previewMinLikes;
+      document.getElementById('pf-likes-max').value = previewMaxLikes;
+      document.getElementById('pf-sub-state').value = previewSubtitleState;
+      document.getElementById('preview-filter-modal').style.display = 'flex';
+    }
+
+    function closePreviewFilterModal() {
+      document.getElementById('preview-filter-modal').style.display = 'none';
+    }
+
+    function clearPreviewFilters() {
+      previewMinDuration = '';
+      previewMaxDuration = '';
+      previewMinViews = '';
+      previewMinLikes = '';
+      previewMaxLikes = '';
+      previewSubtitleState = '';
+      closePreviewFilterModal();
+      playlistPage = 0;
+      fetchPreviewPage(false);
+    }
+
+    function applyPreviewFilterModal() {
+      previewMinDuration = document.getElementById('pf-dur-min').value || '';
+      previewMaxDuration = document.getElementById('pf-dur-max').value || '';
+      previewMinViews = document.getElementById('pf-views-min').value || '';
+      previewMinLikes = document.getElementById('pf-likes-min').value || '';
+      previewMaxLikes = document.getElementById('pf-likes-max').value || '';
+      previewSubtitleState = document.getElementById('pf-sub-state').value || '';
+      closePreviewFilterModal();
+      playlistPage = 0;
+      fetchPreviewPage(false);
+    }
+
     function togglePlaylistItem(i) {
-        const card = document.getElementById(`pl-item-${i}`);
-        const btn = card.querySelector('.btn-toggle');
-        if (selectedPlaylistIndices.has(i)) {
-            selectedPlaylistIndices.delete(i);
-            card.style.opacity = '0.5';
-            btn.innerHTML = '➕';
-            btn.title = 'Select';
-            btn.style.color = '#fff';
-            btn.style.background = 'var(--m)';
-        } else {
-            selectedPlaylistIndices.add(i);
-            card.style.opacity = '1';
-            btn.innerHTML = '&times;';
-            btn.title = 'Unselect';
-            btn.style.color = 'var(--t)';
-            btn.style.background = 'var(--s3)';
-        }
+      const entry = currentPlaylistEntries[i];
+      if (!entry) return;
+      if (excludedPlaylistUrls.has(entry.url)) excludedPlaylistUrls.delete(entry.url);
+      else excludedPlaylistUrls.add(entry.url);
+      renderPlaylistRowState(i);
+    }
+
+    function renderPlaylistRowState(i) {
+      const entry = currentPlaylistEntries[i];
+      const row = document.getElementById(`pl-item-${i}`);
+      if (!entry || !row) return;
+      const btn = row.querySelector('.btn-toggle');
+      const excluded = excludedPlaylistUrls.has(entry.url);
+      row.style.opacity = excluded ? '0.5' : '1';
+      btn.innerHTML = excluded ? '➕' : '&times;';
+      btn.title = excluded ? 'Include' : 'Exclude';
+      btn.style.color = excluded ? '#fff' : 'var(--t)';
+      btn.style.background = excluded ? 'var(--m)' : 'var(--s3)';
+    }
+
+    function renderPlaylistPager() {
+      const pager = document.getElementById('playlist-pager');
+      const totalPages = Math.ceil(currentPreviewTotal / playlistPageSize);
+      if (currentPlaylistType === 'video' || totalPages <= 1) {
+        pager.style.display = 'none';
+        return;
+      }
+      pager.style.display = 'flex';
+      document.getElementById('playlist-pager-info').textContent = `Page ${playlistPage + 1} of ${totalPages}`;
+      document.getElementById('playlist-prev').disabled = playlistPage <= 0;
+      document.getElementById('playlist-next').disabled = playlistPage >= totalPages - 1;
+    }
+
+    function setPlaylistPage(nextPage) {
+      const totalPages = Math.max(1, Math.ceil(currentPreviewTotal / playlistPageSize));
+      playlistPage = Math.min(Math.max(0, nextPage), totalPages - 1);
+      fetchPreviewPage(false);
+    }
+
+    function setPlaylistPageDelta(delta) {
+      setPlaylistPage(playlistPage + delta);
     }
 
     document.getElementById('url-input').addEventListener('input', (e) => {
-        const dlBtn = document.getElementById('dl-btn');
-        if (e.target.value.trim() !== lastFetchedUrl || !lastFetchedUrl) {
-           dlBtn.style.display = 'none';
-        } else {
-           dlBtn.style.display = 'inline-flex';
-        }
+      const dlBtn = document.getElementById('dl-btn');
+      if (e.target.value.trim() !== lastFetchedUrl || !lastFetchedUrl) dlBtn.style.display = 'none';
+      else dlBtn.style.display = 'inline-flex';
     });
 
-    function renderSubs(containerId, langs) {
-        const c = document.getElementById(containerId);
-        c.innerHTML = '';
-        if (!langs || !langs.length) {
-            c.style.display = 'none';
-            return;
-        }
-        c.style.display = 'block';
-        c.style.alignItems = 'normal';
+    function renderInfoCard(data) {
+      const box = document.getElementById('info-box');
+      let badge = '';
+      if (data.type === 'playlist') badge = '<span class="badge bp">📋 Playlist</span>';
+      else if (data.type === 'channel') badge = '<span class="badge bc">📡 Channel</span>';
+      else badge = '<span class="badge bv">📺 Video</span>';
 
-        selectedSubs.clear();
-        if (langs.includes('en')) selectedSubs.add('en');
-
-        const disp = new Intl.DisplayNames(['en'], { type: 'language' });
-        function getLangName(code) {
-             try { return disp.of(code) || code; } catch(e) { return code; }
-        }
-
-        c.innerHTML = `
-          <div style="display:flex; flex-direction:column; gap:0.4rem; width:100%; position:relative;">
-            <div style="display:flex; align-items:center;">
-              <span style="font-size:0.77rem; color:var(--m); font-weight:500; margin-right:0.4rem;">Subtitles:</span>
-              <div style="position:relative; max-width:250px;">
-                <button class="btn-g btn-xs" style="width:100%; justify-content:space-between; min-width:140px;" onclick="const m = document.getElementById('${containerId}-menu'); m.style.display = m.style.display === 'none' ? 'block' : 'none'; event.stopPropagation();">
-                   Add Subtitles... <span>▼</span>
-                </button>
-                <div id="${containerId}-menu" style="display:none; position:absolute; top:100%; left:0; width:100%; background:var(--s2); border:1px solid var(--b2); border-radius:var(--rx); padding:0.5rem; z-index:100; max-height:200px; overflow-y:auto; box-shadow:0 4px 12px rgba(0,0,0,0.5);">
-                   <div style="display:flex; justify-content:space-between; margin-bottom:0.4rem; border-bottom:1px solid var(--b1); padding-bottom:0.3rem;">
-                     <button class="btn-ghost btn-xs" onclick="event.preventDefault(); window._selectAllSubs('${containerId}', true)">All</button>
-                     <button class="btn-ghost btn-xs" onclick="event.preventDefault(); window._selectAllSubs('${containerId}', false)">None</button>
-                   </div>
-                   <div id="${containerId}-list" style="display:flex; flex-direction:column; gap:0.2rem;"></div>
-                </div>
-              </div>
-            </div>
-            <div id="${containerId}-chips" style="display:flex; flex-wrap:wrap; gap:0.3rem; margin-top:0.2rem;"></div>
+      box.innerHTML = `
+        <div id="i-thumb-slot"></div>
+        <div class="i-body">
+          <div class="i-title" id="i-title"></div>
+          <div class="i-meta" id="i-meta"></div>
+          <div id="i-subs" style="margin-top: 0.5rem; display: none; gap:0.4rem; flex-wrap:wrap;"></div>
+          <div id="i-preview-controls" class="sort-row" style="display:none; margin-top:0.6rem; margin-bottom:0;">
+            <button class="btn-g btn-xs" onclick="openPreviewFilterModal()" style="padding:0.4rem 0.6rem;">🔍 Filter</button>
+            <label style="margin-left:auto; align-self:center;">Sort by</label>
+            <select id="preview-sort-field" onchange="applyPreviewFilters()" style="min-width:150px; max-width:210px">
+              <option value="playlist_index">Playlist order</option>
+              <option value="title">Title</option>
+              <option value="uploader">Channel</option>
+              <option value="duration">Duration</option>
+              <option value="view_count">Views</option>
+              <option value="like_count">Likes</option>
+            </select>
+            <button class="ord-btn asc" id="preview-ord-btn" onclick="togglePreviewOrder()">↓ Desc</button>
           </div>
+        </div>
+      `;
+      document.getElementById('i-title').innerHTML = badge + esc(data.title || '');
+      const meta = [];
+      if (data.uploader) meta.push(data.uploader);
+      if (data.count) meta.push(`${data.count} items`);
+      if (data.duration && !data.count) meta.push(fmtDur(data.duration));
+      if (data.view_count) meta.push(`${fmtN(data.view_count)} views`);
+      if (data.like_count && !data.count) meta.push(`${fmtN(data.like_count)} likes`);
+      document.getElementById('i-meta').textContent = meta.join(' · ');
+
+      const ts = document.getElementById('i-thumb-slot');
+      if (data.thumbnail) ts.innerHTML = `<img class="i-thumb" src="${esc(data.thumbnail)}" alt=""/>`;
+      else ts.innerHTML = `<div class="i-ph">${data.type === 'channel' ? '📡' : data.type === 'playlist' ? '📋' : '📺'}</div>`;
+
+      box.classList.add('on');
+      renderGlobalSubtitleSelector();
+      updatePreviewControls();
+    }
+
+    function renderPlaylistPage() {
+      const pb = document.getElementById('playlist-box');
+      if (currentPlaylistType === 'video') {
+        pb.style.display = 'none';
+        updatePreviewControls();
+        renderPlaylistPager();
+        return;
+      }
+
+      updatePreviewControls();
+      pb.style.display = 'flex';
+      pb.innerHTML = '';
+      getCurrentPageEntries().forEach(({ entry, index }) => {
+        const row = document.createElement('div');
+        row.id = `pl-item-${index}`;
+        row.className = 'job-card';
+        row.style.cssText = 'position:relative; background:var(--s2); border:1px solid var(--b1); padding:0.8rem; border-radius:var(--rs); display:flex; gap:0.75rem; flex-direction:row; align-items:flex-start; width:100%; transition: opacity 0.2s;';
+        row.innerHTML = `
+          <div id="pl-thumb-slot-${index}">
+             <div class="i-ph">📺</div>
+          </div>
+          <div class="i-body" style="padding-right:2rem;">
+             <div class="i-title">${esc(entry.title || `Item ${index + 1}`)}</div>
+             <div class="i-meta" id="pl-meta-${index}">Fetching info <span class="spin" style="width:10px;height:10px;border-width:2px;vertical-align:middle;margin-left:0.2rem;"></span></div>
+             <div id="pl-subs-${index}" style="margin-top:0.4rem; display:none; gap:0.4rem; flex-wrap:wrap;"></div>
+          </div>
+          <button class="btn-ghost btn-toggle" title="Exclude" onclick="togglePlaylistItem(${index})" style="position:absolute; top:0.5rem; right:0.5rem; padding:0; font-size:1.4rem; color:var(--t); border-radius:50%; width:28px; height:28px; display:flex; align-items:center; justify-content:center; background:var(--s3);">&times;</button>
         `;
-        
-        const list = document.getElementById(`${containerId}-list`);
-        langs.forEach(lang => {
-            const lbl = document.createElement('label');
-            lbl.style.cssText = 'display:flex; align-items:center; gap:0.4rem; cursor:pointer; color:var(--t); padding:0.2rem; border-radius:4px; font-size:0.75rem;';
-            lbl.onmouseover = () => lbl.style.background = 'var(--s3)';
-            lbl.onmouseout = () => lbl.style.background = 'transparent';
-            
-            const chk = document.createElement('input');
-            chk.type = 'checkbox';
-            chk.value = lang;
-            chk.checked = selectedSubs.has(lang);
-            chk.onchange = (e) => {
-                if (e.target.checked) selectedSubs.add(lang);
-                else selectedSubs.delete(lang);
-                updateChips(containerId, langs);
-            };
-            
-            lbl.appendChild(chk);
-            lbl.appendChild(document.createTextNode(getLangName(lang) + ` (${lang})`));
-            list.appendChild(lbl);
+        pb.appendChild(row);
+
+        if (entry.info || entry.predefined) updatePlaylistCard(index, entry.info || entry.predefined);
+        else renderSubtitleSelector(`pl-subs-${index}`, [], getEntrySubtitleSelection(entry), {
+          label: 'Subtitles:',
+          onChange: (langs) => updateEntrySubtitleSelection(entry.url, langs),
         });
-        
-        window._selectAllSubs = (cid, all) => {
-             const checkboxes = document.getElementById(`${cid}-list`).querySelectorAll('input[type="checkbox"]');
-             checkboxes.forEach(c => {
-                  c.checked = all;
-                  if (all) selectedSubs.add(c.value);
-                  else selectedSubs.delete(c.value);
-             });
-             updateChips(cid, langs);
-        };
-        
-        updateChips(containerId, langs);
-        
-        document.addEventListener('click', (e) => {
-             const menu = document.getElementById(`${containerId}-menu`);
-             if (menu && menu.style.display === 'block' && !e.target.closest('.btn-g')) {
-                 if (!menu.contains(e.target)) {
-                     menu.style.display = 'none';
-                 }
-             }
-        }, { capture: true });
+        renderPlaylistRowState(index);
+      });
+
+      renderPlaylistPager();
     }
 
-    function updateChips(containerId, allLangs) {
-         const chips = document.getElementById(`${containerId}-chips`);
-         if (!chips) return;
-         chips.innerHTML = '';
-         
-         const disp = new Intl.DisplayNames(['en'], { type: 'language' });
-         
-         Array.from(selectedSubs).forEach(lang => {
-             if (!allLangs.includes(lang)) return;
-             let name = lang; try { name = disp.of(lang) || lang; } catch(e){}
-             
-             const chip = document.createElement('div');
-             chip.style.cssText = 'display:inline-flex; align-items:center; gap:0.3rem; padding:0.15rem 0.4rem; background:rgba(124,58,237,0.15); border:1px solid rgba(124,58,237,0.3); border-radius:4px; color:var(--t); font-size:0.7rem; font-weight:600;';
-             chip.innerHTML = `<span>${esc(name)}</span>`;
-             
-             const x = document.createElement('span');
-             x.innerHTML = '×';
-             x.style.cssText = 'cursor:pointer; opacity:0.6; padding:0 0.2rem; margin-left:0.1rem;';
-             x.onmouseover = () => x.style.opacity = '1';
-             x.onmouseout = () => x.style.opacity = '0.6';
-             x.onclick = () => {
-                 selectedSubs.delete(lang);
-                 const chk = document.querySelector(`#${containerId}-list input[value="${lang}"]`);
-                 if (chk) chk.checked = false;
-                 updateChips(containerId, allLangs);
-             };
-             chip.appendChild(x);
-             chips.appendChild(chip);
-         });
+    function updatePlaylistCard(i, data) {
+      currentPlaylistEntries[i].info = data;
+      (data.subtitles || []).forEach(lang => knownSubtitleLangs.add(lang));
+
+      const meta = [];
+      if (data.uploader) meta.push(data.uploader);
+      if (data.duration) meta.push(fmtDur(data.duration));
+      if (data.view_count) meta.push(fmtN(data.view_count) + ' views');
+      if (data.like_count) meta.push(fmtN(data.like_count) + ' likes');
+
+      const metaEl = document.getElementById(`pl-meta-${i}`);
+      if (metaEl) metaEl.textContent = meta.join(' · ') || 'No extra info';
+
+      const ts = document.getElementById(`pl-thumb-slot-${i}`);
+      if (ts && data.thumbnail) ts.innerHTML = `<img class="i-thumb" src="${esc(data.thumbnail)}" alt=""/>`;
+
+      const entry = currentPlaylistEntries[i];
+      if (entry) {
+        renderSubtitleSelector(`pl-subs-${i}`, data.subtitles || [], getEntrySubtitleSelection(entry), {
+          label: 'Subtitles:',
+          onChange: (langs) => updateEntrySubtitleSelection(entry.url, langs),
+        });
+      }
+      renderGlobalSubtitleSelector();
     }
 
-    function getCheckedSubs(containerId) {
-        return Array.from(selectedSubs);
+    async function fetchPreviewPage() {
+      const token = ++previewRequestToken;
+      if (currentPlaylistType === 'video' || !currentPlaylistUrl || currentInquiryStatus !== 'done') {
+        hidePreviewList();
+        return;
+      }
+      const params = new URLSearchParams({
+        url: currentPlaylistUrl,
+        page: String(playlistPage),
+        limit: String(playlistPageSize),
+        sort_by: previewSortField,
+        order: previewSortOrder,
+      });
+      if (previewMinDuration !== '') params.set('min_duration', previewMinDuration);
+      if (previewMaxDuration !== '') params.set('max_duration', previewMaxDuration);
+      if (previewMinViews !== '') params.set('min_views', previewMinViews);
+      if (previewMinLikes !== '') params.set('min_likes', previewMinLikes);
+      if (previewMaxLikes !== '') params.set('max_likes', previewMaxLikes);
+      if (previewSubtitleState) params.set('subtitle_state', previewSubtitleState);
+
+      const pb = document.getElementById('playlist-box');
+      try {
+        const res = await fetch(`/api/preview?` + params.toString());
+        const raw = await res.text();
+        let data = {};
+        try { data = raw ? JSON.parse(raw) : {}; } catch (_) { data = { detail: raw || 'Failed to load preview' }; }
+        if (token !== previewRequestToken) return;
+        if (!res.ok) throw new Error(data.detail || data.error || 'Failed to load preview');
+        currentPreviewTotal = data.total || 0;
+        currentPlaylistEntries = (data.items || []).map(item => ({ ...item, info: item, predefined: item }));
+        playlistPage = data.page || 0;
+        if (!currentPlaylistEntries.length) {
+          pb.style.display = 'none';
+          renderPlaylistPager();
+          return;
+        }
+        renderPlaylistPage();
+      } catch (e) {
+        if (token !== previewRequestToken) return;
+        currentPlaylistEntries = [];
+        currentPreviewTotal = 0;
+        pb.innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div>${esc(e.message)}</div></div>`;
+        renderPlaylistPager();
+      }
     }
 
-    // ── Info fetch ─────────────────────────────────────────────────────────────
+    function applyInquirySelection(inquiry, reset = true) {
+      currentInquiryId = inquiry.inquiry_id || currentInquiryId;
+      currentInquiryStatus = inquiry.status || currentInquiryStatus;
+      currentPlaylistUrl = inquiry.source_url || '';
+      currentPlaylistType = inquiry.source_type || 'playlist';
+      currentPreviewTotal = inquiry.total_count || 0;
+      if (reset) {
+        playlistPage = 0;
+        previewMinDuration = '';
+        previewMaxDuration = '';
+        previewMinViews = '';
+        previewMinLikes = '';
+        previewMaxLikes = '';
+        previewSubtitleState = '';
+        previewSortField = 'playlist_index';
+        previewSortOrder = 'asc';
+        excludedPlaylistUrls = new Set();
+        draftGlobalSubtitleSelection = [];
+        appliedGlobalSubtitleSelection = [];
+        subtitleOverrides = new Map();
+        knownSubtitleLangs = new Set();
+      }
+      renderInfoCard({
+        type: inquiry.source_type || 'playlist',
+        title: inquiry.title || inquiry.source_url,
+        uploader: inquiry.uploader || '',
+        count: inquiry.total_count || 0,
+      });
+      if (currentInquiryStatus !== 'done') hidePreviewList();
+    }
+
+    async function selectInquiry(inquiryId) {
+      try {
+        const res = await fetch(`/api/inquiries/${encodeURIComponent(inquiryId)}`);
+        const inquiry = await res.json();
+        if (!res.ok) throw new Error(inquiry.detail || 'Failed to load inquiry');
+        applyInquirySelection(inquiry, true);
+        if (inquiry.status === 'done') await fetchPreviewPage();
+      } catch (e) {
+        toast('Error: ' + e.message, 'er');
+      }
+    }
+
     async function fetchInfo() {
       cancelInfoFetches = true;
+      playlistFetchToken += 1;
       const url = document.getElementById('url-input').value.trim();
       if (!url) return;
+
       const box = document.getElementById('info-box');
       box.innerHTML = `
         <div class="i-thumb" style="background: var(--s3); position:relative; overflow:hidden;">
-            <div style="position:absolute; inset:0; background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.05) 50%, transparent 100%); background-size: 200% 100%; animation: shimmer 1.2s linear infinite;"></div>
+          <div style="position:absolute; inset:0; background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.05) 50%, transparent 100%); background-size: 200% 100%; animation: shimmer 1.2s linear infinite;"></div>
         </div>
         <div class="i-body" style="display:flex; flex-direction:column; justify-content:center; gap:0.6rem;">
           <div style="height:14px; width:60%; background: var(--s3); border-radius:4px; position:relative; overflow:hidden;">
-             <div style="position:absolute; inset:0; background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.05) 50%, transparent 100%); background-size: 200% 100%; animation: shimmer 1.2s linear infinite;"></div>
+            <div style="position:absolute; inset:0; background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.05) 50%, transparent 100%); background-size: 200% 100%; animation: shimmer 1.2s linear infinite;"></div>
           </div>
           <div style="height:10px; width:40%; background: var(--s3); border-radius:4px; position:relative; overflow:hidden;">
-             <div style="position:absolute; inset:0; background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.05) 50%, transparent 100%); background-size: 200% 100%; animation: shimmer 1.2s linear infinite;"></div>
+            <div style="position:absolute; inset:0; background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.05) 50%, transparent 100%); background-size: 200% 100%; animation: shimmer 1.2s linear infinite;"></div>
           </div>
         </div>
       `;
       box.classList.add('on');
       document.getElementById('playlist-box').style.display = 'none';
+      document.getElementById('playlist-pager').style.display = 'none';
       document.getElementById('dl-btn').style.display = 'none';
 
       const btn = document.getElementById('info-btn');
       btn.disabled = true;
       btn.innerHTML = '<span class="spin"></span>';
       try {
-        const res = await fetch('/api/info?url=' + encodeURIComponent(url));
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Failed to fetch info');
-        if (!data.title) throw new Error('No info returned — URL may be invalid or private');
-
-        if (data.type === 'video') {
-            data.entries = [{ url: data.url || url, title: data.title, predefined: data }];
-        }
-        
-        currentPlaylistEntries = data.entries || [];
-        selectedPlaylistIndices = new Set(currentPlaylistEntries.map((_, i) => i));
-
-        if (data.type !== 'video') {
-            box.innerHTML = `
-              <div id="i-thumb-slot"></div>
-              <div class="i-body">
-                <div class="i-title" id="i-title"></div>
-                <div class="i-meta" id="i-meta"></div>
-              </div>
-            `;
-            let badge = '';
-            if (data.type === 'playlist') badge = '<span class="badge bp">📋 Playlist</span>';
-            else if (data.type === 'channel') badge = '<span class="badge bc">📡 Channel</span>';
-            document.getElementById('i-title').innerHTML = badge + esc(data.title || '');
-            const parts = [];
-            if (data.uploader) parts.push(data.uploader);
-            if (data.count) parts.push(data.count + ' items');
-            if (data.duration && !data.count) parts.push(fmtDur(data.duration));
-            document.getElementById('i-meta').textContent = parts.join(' · ');
-            const ts = document.getElementById('i-thumb-slot');
-            if (data.thumbnail) ts.innerHTML = `<img class="i-thumb" src="${esc(data.thumbnail)}" alt=""/>`;
-            else ts.innerHTML = `<div class="i-ph">${data.type === 'channel' ? '📡' : '📋'}</div>`;
-            box.classList.add('on');
-        } else {
-            box.classList.remove('on');
-        }
-        
-        lastFetchedUrl = url;
-        
-        const dlBtn = document.getElementById('dl-btn');
-        if (url === document.getElementById('url-input').value.trim()) {
-            dlBtn.style.display = 'inline-flex';
-        }
-        dlBtn.querySelector('#dl-txt').textContent = data.type === 'video' ? 'Download' : 'Download All';
-        dlBtn.onclick = data.type === 'video' ? () => submitSingleJob(currentPlaylistEntries[0].url, getCheckedSubs('pl-subs-0'), null) : submitAllPlaylistJobs;
-        
-        const pb = document.getElementById('playlist-box');
-        pb.style.display = 'flex';
-        pb.innerHTML = '';
-        cancelInfoFetches = false;
-        
-        currentPlaylistEntries.forEach((entry, i) => {
-            const row = document.createElement('div');
-            row.id = `pl-item-${i}`;
-            row.className = 'job-card';
-            row.style.cssText = 'position:relative; background:var(--s2); border:1px solid var(--b1); padding:0.8rem; border-radius:var(--rs); display:flex; gap:0.75rem; flex-direction:row; align-items:flex-start; width:100%; transition: opacity 0.2s;';
-            row.innerHTML = `
-              <div id="pl-thumb-slot-${i}">
-                 <div class="i-ph">📺</div>
-              </div>
-              <div class="i-body" style="padding-right:2rem;">
-                 <div class="i-title">${esc(entry.title)}</div>
-                 <div class="i-meta" id="pl-meta-${i}">Fetching info <span class="spin" style="width:10px;height:10px;border-width:2px;vertical-align:middle;margin-left:0.2rem;"></span></div>
-                 <div id="pl-subs-${i}" style="margin-top:0.4rem; display:none; gap:0.4rem; flex-wrap:wrap;"></div>
-              </div>
-              <button class="btn-ghost btn-toggle" title="Unselect" onclick="togglePlaylistItem(${i})" style="position:absolute; top:0.5rem; right:0.5rem; padding:0; font-size:1.4rem; color:var(--t); border-radius:50%; width:28px; height:28px; display:flex; align-items:center; justify-content:center; background:var(--s3);">&times;</button>
-            `;
-            pb.appendChild(row);
-
-            if (entry.predefined) {
-                 updatePlaylistCard(i, entry.predefined);
-            }
+        const res = await fetch('/api/inquiries', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
         });
-        
-        fetchPlaylistItemsSeq(currentPlaylistEntries.filter(e => !e.predefined));
+        const inquiry = await res.json();
+        if (!res.ok) throw new Error(inquiry.detail || 'Failed to create inquiry');
+
+        cancelInfoFetches = false;
+        currentPlaylistEntries = [];
+        lastFetchedUrl = url;
+        applyInquirySelection(inquiry, true);
+        if (inquiry.status === 'done') await fetchPreviewPage();
+
+        const dlBtn = document.getElementById('dl-btn');
+        if (url === document.getElementById('url-input').value.trim()) dlBtn.style.display = 'inline-flex';
+        dlBtn.querySelector('#dl-txt').textContent = (inquiry.source_type || 'playlist') === 'video' ? 'Download' : 'Download All';
+        dlBtn.onclick = (inquiry.source_type || 'playlist') === 'video'
+          ? () => submitSingleJob(currentPlaylistEntries[0].url, getEntrySubtitleSelection(currentPlaylistEntries[0]), null)
+          : submitAllPlaylistJobs;
       } catch (e) {
         box.classList.remove('on');
+        document.getElementById('playlist-box').style.display = 'none';
+        document.getElementById('playlist-pager').style.display = 'none';
         toast('❌ ' + e.message, 'er');
       } finally {
         btn.disabled = false;
         btn.textContent = 'Info';
       }
-    }
-
-    function updatePlaylistCard(i, data) {
-         currentPlaylistEntries[i].info = data;
-         const meta = [];
-         if (data.uploader) meta.push(data.uploader);
-         if (data.duration) meta.push(fmtDur(data.duration));
-         if (data.view_count) meta.push(fmtN(data.view_count) + ' views');
-         document.getElementById(`pl-meta-${i}`).innerHTML = meta.join(' · ');
-
-         const ts = document.getElementById(`pl-thumb-slot-${i}`);
-         if (data.thumbnail) ts.innerHTML = `<img class="i-thumb" src="${esc(data.thumbnail)}" alt=""/>`;
-
-         renderSubs(`pl-subs-${i}`, data.subtitles);
-    }
-
-    async function fetchPlaylistItemsSeq(entries) {
-       for (let e = 0; e < entries.length; e++) {
-            if (cancelInfoFetches) break;
-            const entry = entries[e];
-            const i = currentPlaylistEntries.indexOf(entry);
-            if (entry.predefined || entry.info) continue;
-            try {
-                const res = await fetch('/api/info?url=' + encodeURIComponent(entry.url));
-                const data = await res.json();
-                if (data && data.type === 'video') {
-                   updatePlaylistCard(i, data);
-                } else {
-                   document.getElementById(`pl-meta-${i}`).textContent = 'Unavailable';
-                }
-            } catch (err) {
-                document.getElementById(`pl-meta-${i}`).textContent = 'Failed to load info';
-            }
-       }
     }
 
     // ── Start download (non-blocking) ──────────────────────────────────────────
@@ -1994,36 +2415,46 @@
         ogBtn.disabled = true;
         ogBtn.querySelector('#dl-txt').innerHTML = '<span class="spin"></span> Starting…';
 
-        const indices = Array.from(selectedPlaylistIndices);
-        if (!indices.length) {
+        const includedCount = currentPlaylistEntries.length - excludedPlaylistUrls.size;
+        if (!includedCount) {
             toast('No items selected', 'er');
             ogBtn.disabled = false;
             ogBtn.innerHTML = originalHtml;
             return;
         }
 
-        for (const i of indices) {
-            const entry = currentPlaylistEntries[i];
-            const data = entry.info || entry.predefined;
-            if (data) {
-                try {
-                    const res = await fetch('/api/jobs', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ url: entry.url, mode: dlMode, quality, target_path: targetPath, subtitles: getCheckedSubs(`pl-subs-${i}`) })
-                    });
-                    const d = await res.json().catch(()=>({}));
-                    if (res.status === 409 && d.detail?.duplicate) {
-                       toast(`Skipped duplicate: ${entry.title}`, 'in');
-                    } else if (!res.ok) {
-                       toast(`Error: ${entry.title}`, 'er');
-                    }
-                } catch(e) {}
-            }
+        const individual_subtitles = {};
+        subtitleOverrides.forEach((langs, url) => {
+          individual_subtitles[url] = normalizeSubtitleSelection(langs);
+        });
+
+        try {
+          const res = await fetch('/api/playlist_jobs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              playlist_url: currentPlaylistUrl,
+              mode: dlMode,
+              quality,
+              target_path: targetPath,
+              excluded_urls: Array.from(excludedPlaylistUrls),
+              global_subtitles: appliedGlobalSubtitleSelection,
+              individual_subtitles,
+            })
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.detail || ('HTTP ' + res.status));
+
+          if (data.queued) toast(`Queued ${data.queued} jobs`, 'ok');
+          else toast('No new jobs queued', 'in');
+          if (data.skipped_duplicates) toast(`Skipped ${data.skipped_duplicates} duplicates`, 'in');
+          sendQueuePage();
+        } catch (e) {
+          toast('Error: ' + e.message, 'er');
+        } finally {
+          ogBtn.disabled = false;
+          ogBtn.innerHTML = originalHtml;
         }
-        ogBtn.innerHTML = originalHtml;
-        toast('Queued selected jobs!', 'ok');
-        sendQueuePage();
     }
 
     // ── Queue WebSocket ────────────────────────────────────────────────────────
@@ -2391,6 +2822,152 @@
 
     function zipPrev() { if (zipPage > 0) { zipPage--; zipJobs.clear(); document.getElementById('zip-queue-list').innerHTML = ''; sendZipPage(); } }
     function zipNext() { zipPage++; zipJobs.clear(); document.getElementById('zip-queue-list').innerHTML = ''; sendZipPage(); }
+
+    function connectInquiryWs() {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      inquiryWs = new WebSocket(`${proto}://${location.host}/ws/inquiries`);
+      inquiryWs.onopen = () => { sendInquiryPage(); };
+      inquiryWs.onmessage = e => {
+        try { handleInquiryMsg(JSON.parse(e.data)); } catch (_) { }
+      };
+      inquiryWs.onclose = () => { setTimeout(connectInquiryWs, 2000); };
+    }
+
+    function sendInquiryPage() {
+      if (inquiryWs?.readyState === 1) {
+        inquiryWs.send(JSON.stringify({ page: inquiryPage, limit: QUEUE_PG }));
+      }
+    }
+
+    function handleInquiryMsg(data) {
+      if (data.type !== 'update') return;
+      inquiryTotal = data.total || 0;
+      (data.removed || []).forEach(id => {
+        inquiryJobs.delete(id);
+        const card = document.getElementById('iqc-' + id);
+        if (card) {
+          card.classList.add('fade-out');
+          setTimeout(() => card.remove(), 420);
+        }
+        if (currentInquiryId === id) {
+          currentInquiryId = '';
+        }
+      });
+
+      (data.inquiries || []).forEach(inquiry => {
+        inquiryJobs.set(inquiry.inquiry_id, inquiry);
+        const existing = document.getElementById('iqc-' + inquiry.inquiry_id);
+        if (existing) updateInquiryCard(existing, inquiry);
+        else insertInquiryCardSorted(makeInquiryCard(inquiry), inquiry);
+        if (currentInquiryId === inquiry.inquiry_id) {
+          applyInquirySelection(inquiry, false);
+        }
+        const submittedUrl = normalizeInquiryUrl(document.getElementById('url-input').value);
+        const inquiryUrl = normalizeInquiryUrl(inquiry.source_url);
+        const selectedUrl = normalizeInquiryUrl(currentPlaylistUrl);
+        if (inquiry.status === 'done' && inquiryUrl && (inquiryUrl === submittedUrl || inquiryUrl === selectedUrl)) {
+          applyInquirySelection(inquiry, false);
+          fetchPreviewPage();
+        }
+      });
+
+      renderInquiryMeta();
+    }
+
+    function insertInquiryCardSorted(card, inquiry) {
+      const list = document.getElementById('inquiry-queue-list');
+      const empty = list.querySelector('.empty');
+      if (empty) empty.remove();
+      const cards = list.querySelectorAll('.job-card');
+      let inserted = false;
+      for (const existing of cards) {
+        const existingInquiry = inquiryJobs.get(existing.id.slice(4));
+        if (existingInquiry && inquiry.created_at && existingInquiry.created_at < inquiry.created_at) {
+          list.insertBefore(card, existing);
+          inserted = true;
+          break;
+        }
+      }
+      if (!inserted) list.appendChild(card);
+    }
+
+    function renderInquiryMeta() {
+      const list = document.getElementById('inquiry-queue-list');
+      if (inquiryJobs.size === 0) {
+        list.innerHTML = '<div class="empty"><div class="empty-icon">🧾</div><div>No inquiries yet</div></div>';
+      } else {
+        const empty = list.querySelector('.empty');
+        if (empty) empty.remove();
+      }
+      const totalPages = Math.max(1, Math.ceil(inquiryTotal / QUEUE_PG));
+      document.getElementById('inquiry-queue-count').textContent =
+        inquiryTotal > 0 ? `${inquiryTotal} item${inquiryTotal !== 1 ? 's' : ''}` : '';
+      const pager = document.getElementById('inquiry-queue-pager');
+      if (inquiryTotal > QUEUE_PG) {
+        pager.style.display = 'flex';
+        document.getElementById('inquiry-pager-info').textContent = `Page ${inquiryPage + 1} / ${totalPages}`;
+        document.getElementById('iq-prev').disabled = inquiryPage === 0;
+        document.getElementById('iq-next').disabled = inquiryPage >= totalPages - 1;
+      } else {
+        pager.style.display = 'none';
+      }
+    }
+
+    function inquiryPrev() { if (inquiryPage > 0) { inquiryPage--; inquiryJobs.clear(); document.getElementById('inquiry-queue-list').innerHTML = ''; sendInquiryPage(); } }
+    function inquiryNext() { inquiryPage++; inquiryJobs.clear(); document.getElementById('inquiry-queue-list').innerHTML = ''; sendInquiryPage(); }
+
+    function makeInquiryCard(inquiry) {
+      const div = document.createElement('div');
+      div.className = 'job-card';
+      div.id = 'iqc-' + inquiry.inquiry_id;
+      renderInquiryCardContent(div, inquiry);
+      return div;
+    }
+
+    function updateInquiryCard(el, inquiry) {
+      renderInquiryCardContent(el, inquiry);
+    }
+
+    function renderInquiryCardContent(el, inquiry) {
+      const total = Number(inquiry.total_count || 0);
+      const processed = Number(inquiry.processed_count || 0);
+      const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
+      const active = currentInquiryId === inquiry.inquiry_id;
+      let badge = '<span class="phase-pill ph-queued">QUEUED</span>';
+      if (inquiry.status === 'done') badge = '<span class="phase-pill ph-done">READY</span>';
+      else if (inquiry.status === 'error') badge = '<span class="phase-pill ph-err">ERROR</span>';
+      else if (inquiry.status === 'building') badge = '<span class="phase-pill ph-dl">BUILDING</span>';
+      const barWidth = inquiry.status === 'done' ? '100%' : `${pct}%`;
+      const title = inquiry.title || inquiry.source_url || 'Inquiry';
+      const detail = inquiry.detail || (inquiry.status === 'done' ? 'Preview ready' : 'Working…');
+      const actions = `
+        <button class="btn-xs btn-ghost" onclick="event.stopPropagation(); selectInquiry('${inquiry.inquiry_id}')">Open</button>
+        <button class="btn-xs btn-red" onclick="event.stopPropagation(); deleteInquiry('${inquiry.inquiry_id}')">✕</button>`;
+      el.style.borderColor = active ? 'rgba(168,85,247,.45)' : 'var(--b1)';
+      el.onclick = () => selectInquiry(inquiry.inquiry_id);
+      el.innerHTML = `
+        <div class="job-thumb-ph">🧾</div>
+        <div class="job-body">
+          <div class="job-top">
+            <span class="job-title" title="${esc(title)}">${esc(title)}</span>
+            ${badge}
+          </div>
+          <div class="bar-wrap"><div class="bar-fill" style="width:${barWidth}"></div></div>
+          <div class="job-stats">
+            <span class="stat-bytes">${esc(detail)}</span>
+            ${total ? `<span class="stat-track">${processed}/${total}</span>` : ''}
+          </div>
+          <div class="job-actions">${actions}</div>
+        </div>`;
+    }
+
+    async function deleteInquiry(inquiryId) {
+      try { await fetch(`/api/inquiries/${encodeURIComponent(inquiryId)}`, { method: 'DELETE' }); } catch (_) {}
+      inquiryJobs.delete(inquiryId);
+      const card = document.getElementById('iqc-' + inquiryId);
+      if (card) { card.classList.add('fade-out'); setTimeout(() => card.remove(), 420); }
+      renderInquiryMeta();
+    }
 
     function makeZipCard(job) {
       const div = document.createElement('div');
@@ -2784,6 +3361,7 @@
     // Boot
     connectQueueWs();
     connectZipWs();
+    connectInquiryWs();
     loadChannels();
     loadMedia(true);
   </script>

@@ -75,12 +75,52 @@ CREATE TABLE IF NOT EXISTS zip_queue (
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS inquiry_queue (
+    inquiry_id       TEXT PRIMARY KEY,
+    source_url       TEXT NOT NULL,
+    source_type      TEXT DEFAULT '',
+    title            TEXT DEFAULT '',
+    uploader         TEXT DEFAULT '',
+    total_count      INTEGER DEFAULT 0,
+    processed_count  INTEGER DEFAULT 0,
+    status           TEXT DEFAULT 'queued',
+    phase            TEXT DEFAULT '',
+    detail           TEXT DEFAULT '',
+    error_msg        TEXT DEFAULT '',
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS transcripts (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     media_id    INTEGER REFERENCES media(id) ON DELETE CASCADE,
     language    TEXT,
     text        TEXT,
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS preview_sources (
+    source_url    TEXT PRIMARY KEY,
+    source_type   TEXT,
+    title         TEXT,
+    uploader      TEXT,
+    total_count   INTEGER DEFAULT 0,
+    updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS preview_items (
+    source_url      TEXT NOT NULL REFERENCES preview_sources(source_url) ON DELETE CASCADE,
+    video_url       TEXT NOT NULL,
+    playlist_index  INTEGER DEFAULT 0,
+    title           TEXT,
+    thumbnail       TEXT,
+    uploader        TEXT,
+    duration        INTEGER,
+    view_count      INTEGER,
+    like_count      INTEGER,
+    subtitles_json  TEXT DEFAULT '[]',
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source_url, video_url)
 );
 """
 
@@ -320,6 +360,163 @@ def get_transcripts(media_id: int) -> list[dict]:
             (media_id,)
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+# ── Preview Cache ─────────────────────────────────────────────────────────────
+
+def upsert_preview_source(source_url: str, source_type: str, title: str | None,
+                          uploader: str | None, total_count: int) -> None:
+    with _conn() as c:
+        c.execute(
+            """
+            INSERT INTO preview_sources (source_url, source_type, title, uploader, total_count)
+            VALUES (?,?,?,?,?)
+            ON CONFLICT(source_url) DO UPDATE SET
+                source_type=excluded.source_type,
+                title=excluded.title,
+                uploader=excluded.uploader,
+                total_count=excluded.total_count,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (source_url, source_type, title, uploader, total_count),
+        )
+        c.commit()
+
+
+def get_preview_items(source_url: str) -> list[dict]:
+    with _conn() as c:
+        rows = c.execute(
+            """
+            SELECT video_url, playlist_index, title, thumbnail, uploader,
+                   duration, view_count, like_count, subtitles_json, updated_at
+            FROM preview_items
+            WHERE source_url=?
+            ORDER BY playlist_index ASC, video_url ASC
+            """,
+            (source_url,),
+        ).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["url"] = item.pop("video_url")
+        item["subtitles"] = json.loads(item.pop("subtitles_json") or "[]")
+        items.append(item)
+    return items
+
+
+def upsert_preview_item(source_url: str, item: dict) -> None:
+    with _conn() as c:
+        c.execute(
+            """
+            INSERT INTO preview_items
+                (source_url, video_url, playlist_index, title, thumbnail, uploader,
+                 duration, view_count, like_count, subtitles_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(source_url, video_url) DO UPDATE SET
+                playlist_index=excluded.playlist_index,
+                title=excluded.title,
+                thumbnail=excluded.thumbnail,
+                uploader=excluded.uploader,
+                duration=excluded.duration,
+                view_count=excluded.view_count,
+                like_count=excluded.like_count,
+                subtitles_json=excluded.subtitles_json,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (
+                source_url,
+                item.get("url"),
+                item.get("playlist_index") or 0,
+                item.get("title"),
+                item.get("thumbnail"),
+                item.get("uploader"),
+                item.get("duration"),
+                item.get("view_count"),
+                item.get("like_count"),
+                json.dumps(item.get("subtitles") or []),
+            ),
+        )
+        c.commit()
+
+
+def delete_preview_items_not_in(source_url: str, video_urls: list[str]) -> None:
+    with _conn() as c:
+        if video_urls:
+            placeholders = ",".join("?" for _ in video_urls)
+            c.execute(
+                f"DELETE FROM preview_items WHERE source_url=? AND video_url NOT IN ({placeholders})",
+                [source_url, *video_urls],
+            )
+        else:
+            c.execute("DELETE FROM preview_items WHERE source_url=?", (source_url,))
+        c.commit()
+
+
+# ── Inquiry Queue ─────────────────────────────────────────────────────────────
+
+def inquiry_insert(inquiry_id: str, source_url: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT OR IGNORE INTO inquiry_queue (inquiry_id, source_url, status, phase, detail) VALUES (?,?,?,?,?)",
+            (inquiry_id, source_url, "queued", "queued", "Waiting to start"),
+        )
+        c.commit()
+
+
+def inquiry_update(inquiry_id: str, **kwargs: Any) -> None:
+    allowed = {
+        "source_type", "title", "uploader", "total_count", "processed_count",
+        "status", "phase", "detail", "error_msg",
+    }
+    sets, vals = [], []
+    for key, value in kwargs.items():
+        if key in allowed:
+            sets.append(f"{key}=?")
+            vals.append(value)
+    if not sets:
+        return
+    sets.append("updated_at=CURRENT_TIMESTAMP")
+    vals.append(inquiry_id)
+    with _conn() as c:
+        c.execute(f"UPDATE inquiry_queue SET {', '.join(sets)} WHERE inquiry_id=?", vals)
+        c.commit()
+
+
+def inquiry_get(inquiry_id: str) -> dict | None:
+    with _conn() as c:
+        row = c.execute("SELECT * FROM inquiry_queue WHERE inquiry_id=?", (inquiry_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def inquiry_get_by_source_url(source_url: str) -> dict | None:
+    with _conn() as c:
+        row = c.execute(
+            """
+            SELECT * FROM inquiry_queue
+            WHERE source_url=?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (source_url,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def inquiry_list(page: int = 0, limit: int = 10) -> tuple[list[dict], int]:
+    with _conn() as c:
+        total = c.execute("SELECT COUNT(*) FROM inquiry_queue").fetchone()[0]
+        offset = page * limit
+        rows = c.execute(
+            "SELECT * FROM inquiry_queue ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+        return [dict(r) for r in rows], total
+
+
+def inquiry_delete(inquiry_id: str) -> None:
+    with _conn() as c:
+        c.execute("DELETE FROM inquiry_queue WHERE inquiry_id=?", (inquiry_id,))
+        c.commit()
 
 
 # ── Queue ──────────────────────────────────────────────────────────────────────
