@@ -4,12 +4,14 @@ main.py – YTGrab backend
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 import re
 import shutil
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -68,6 +70,8 @@ app.mount("/files/audio", StaticFiles(directory=str(AUDIO_DIR)), name="audio_fil
 app.mount("/files/video", StaticFiles(directory=str(VIDEO_DIR)), name="video_files")
 
 _dl_semaphore: asyncio.Semaphore
+_download_executor: ThreadPoolExecutor | None = None
+_default_executor: ThreadPoolExecutor | None = None
 _playlist_preview_status: dict[str, dict[str, Any]] = {}
 _playlist_preview_lock = Lock()
 
@@ -308,7 +312,7 @@ def _build_opts(mode: str, quality: str, output_dir: Path, subtitles: list[str] 
 # ── Download worker ────────────────────────────────────────────────────────────
 async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
                    target_path: str, subtitles: list[str]) -> None:
-    global _dl_semaphore
+    global _dl_semaphore, _download_executor
     loop       = asyncio.get_event_loop()
     job_short  = job.job_id[:8]
     base_dir   = AUDIO_DIR if mode == "audio" else VIDEO_DIR
@@ -432,9 +436,12 @@ async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
         for attempt_index in range(len(DOWNLOAD_RETRY_DELAYS) + 1):
             db.queue_update(job.job_id, status="downloading")
             job.push({"phase": "fetching", "message": "Fetching metadata…"})
-            error = await loop.run_in_executor(None, _run)
+            error = await loop.run_in_executor(_download_executor, _run)
             log("🏁", f"[{job_short}] run_in_executor returned — error={error!r} attempt={attempt_index + 1}")
             if not error or error == "__cancelled__":
+                break
+            if _is_rate_limited_error(error):
+                log("⏸️", f"[{job_short}] YouTube rate limit detected. Stopping retries for this item.")
                 break
             if attempt_index >= len(DOWNLOAD_RETRY_DELAYS):
                 break
@@ -490,8 +497,15 @@ async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
 # ── App lifecycle ──────────────────────────────────────────────────────────────
 @app.on_event("startup")
 async def _startup() -> None:
-    global _dl_semaphore
+    global _dl_semaphore, _download_executor, _default_executor
     _dl_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+    loop = asyncio.get_event_loop()
+    # Keep request/DB operations responsive even when downloads are active.
+    default_workers = max(16, MAX_CONCURRENT * 4)
+    _default_executor = ThreadPoolExecutor(max_workers=default_workers, thread_name_prefix="app-default")
+    loop.set_default_executor(_default_executor)
+    # Isolate long yt-dlp operations from API/DB thread pool.
+    _download_executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT, thread_name_prefix="download")
     log("🚀", "App starting up — initialising DB")
     db.init_db()
     log("🗄️", "DB initialised")
@@ -503,6 +517,17 @@ async def _startup() -> None:
             db.queue_update(row["job_id"], status="error",
                             error_msg="Server restarted — download was interrupted")
     log("✅", "Startup complete")
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    global _download_executor, _default_executor
+    if _download_executor:
+        _download_executor.shutdown(wait=False, cancel_futures=False)
+        _download_executor = None
+    if _default_executor:
+        _default_executor.shutdown(wait=False, cancel_futures=False)
+        _default_executor = None
 
 
 # ── Static / HTML ──────────────────────────────────────────────────────────────
@@ -717,7 +742,10 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
     try:
         db.inquiry_update(inquiry_id, status="building", phase="checking_video_ids",
                           detail="Checking current playlist or channel video IDs")
-        info = _yt_dlp_info(url, extract_flat="in_playlist")
+        try:
+            info = _yt_dlp_info(url, extract_flat="in_playlist")
+        except Exception:
+            info = _yt_dlp_info(url)
         src_type = str(info.get("_type") or "video")
 
         if src_type not in ("playlist", "channel"):
@@ -831,6 +859,15 @@ def _preview_item_is_fresh_today(item: dict[str, Any] | None) -> bool:
         return datetime.fromisoformat(updated_at.replace(" ", "T")).date() == datetime.now().date()
     except ValueError:
         return False
+
+
+def _is_rate_limited_error(message: str) -> bool:
+    msg = (message or "").lower()
+    return (
+        "rate-limited by youtube" in msg
+        or "too many requests" in msg
+        or "http error 429" in msg
+    )
 
 
 def _is_supported_playlist_entry(entry: dict | None) -> bool:
@@ -1340,7 +1377,10 @@ async def ws_inquiries(ws: WebSocket) -> None:
 # ── Info ───────────────────────────────────────────────────────────────────────
 def _fetch_info(url: str) -> dict:
     log("🔍", f"_fetch_info url={url[:60]!r}")
-    result = _yt_dlp_info(url, extract_flat="in_playlist")
+    try:
+        result = _yt_dlp_info(url, extract_flat="in_playlist")
+    except Exception:
+        result = _yt_dlp_info(url)
     log("✅", f"_fetch_info complete — type={result.get('_type','video')!r} title={result.get('title','?')!r}")
     return result
 

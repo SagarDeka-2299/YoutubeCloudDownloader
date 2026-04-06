@@ -2093,6 +2093,33 @@
       setPlaylistPage(playlistPage + delta);
     }
 
+    function syncDownloadButton() {
+      const dlBtn = document.getElementById('dl-btn');
+      const currentInput = document.getElementById('url-input').value.trim();
+      if (!lastFetchedUrl || currentInput !== lastFetchedUrl) {
+        dlBtn.style.display = 'none';
+        return;
+      }
+      if (currentPlaylistType === 'video') {
+        const entry = currentPlaylistEntries[0];
+        if (!entry?.url) {
+          dlBtn.style.display = 'none';
+          return;
+        }
+        dlBtn.style.display = 'inline-flex';
+        dlBtn.querySelector('#dl-txt').textContent = 'Download';
+        dlBtn.onclick = () => submitSingleJob(entry.url, getEntrySubtitleSelection(entry), null);
+        return;
+      }
+      if (!currentPlaylistUrl) {
+        dlBtn.style.display = 'none';
+        return;
+      }
+      dlBtn.style.display = 'inline-flex';
+      dlBtn.querySelector('#dl-txt').textContent = 'Download All';
+      dlBtn.onclick = submitAllPlaylistJobs;
+    }
+
     document.getElementById('url-input').addEventListener('input', (e) => {
       const dlBtn = document.getElementById('dl-btn');
       if (e.target.value.trim() !== lastFetchedUrl || !lastFetchedUrl) dlBtn.style.display = 'none';
@@ -2214,7 +2241,7 @@
 
     async function fetchPreviewPage() {
       const token = ++previewRequestToken;
-      if (currentPlaylistType === 'video' || !currentPlaylistUrl || currentInquiryStatus !== 'done') {
+      if (!currentPlaylistUrl || currentInquiryStatus !== 'done') {
         hidePreviewList();
         return;
       }
@@ -2243,18 +2270,43 @@
         currentPreviewTotal = data.total || 0;
         currentPlaylistEntries = (data.items || []).map(item => ({ ...item, info: item, predefined: item }));
         playlistPage = data.page || 0;
+        if (currentPlaylistType === 'video') {
+          const video = currentPlaylistEntries[0];
+          if (!video) {
+            hidePreviewList();
+            syncDownloadButton();
+            return;
+          }
+          (video.subtitles || []).forEach(lang => knownSubtitleLangs.add(lang));
+          renderInfoCard({
+            type: 'video',
+            title: video.title || currentPlaylistUrl,
+            duration: video.duration,
+            thumbnail: video.thumbnail,
+            uploader: video.uploader,
+            view_count: video.view_count,
+            like_count: video.like_count,
+          });
+          renderGlobalSubtitleSelector();
+          hidePreviewList();
+          syncDownloadButton();
+          return;
+        }
         if (!currentPlaylistEntries.length) {
           pb.style.display = 'none';
           renderPlaylistPager();
+          syncDownloadButton();
           return;
         }
         renderPlaylistPage();
+        syncDownloadButton();
       } catch (e) {
         if (token !== previewRequestToken) return;
         currentPlaylistEntries = [];
         currentPreviewTotal = 0;
         pb.innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div>${esc(e.message)}</div></div>`;
         renderPlaylistPager();
+        syncDownloadButton();
       }
     }
 
@@ -2287,6 +2339,7 @@
         count: inquiry.total_count || 0,
       });
       if (currentInquiryStatus !== 'done') hidePreviewList();
+      syncDownloadButton();
     }
 
     async function selectInquiry(inquiryId) {
@@ -2343,13 +2396,7 @@
         lastFetchedUrl = url;
         applyInquirySelection(inquiry, true);
         if (inquiry.status === 'done') await fetchPreviewPage();
-
-        const dlBtn = document.getElementById('dl-btn');
-        if (url === document.getElementById('url-input').value.trim()) dlBtn.style.display = 'inline-flex';
-        dlBtn.querySelector('#dl-txt').textContent = (inquiry.source_type || 'playlist') === 'video' ? 'Download' : 'Download All';
-        dlBtn.onclick = (inquiry.source_type || 'playlist') === 'video'
-          ? () => submitSingleJob(currentPlaylistEntries[0].url, getEntrySubtitleSelection(currentPlaylistEntries[0]), null)
-          : submitAllPlaylistJobs;
+        syncDownloadButton();
       } catch (e) {
         box.classList.remove('on');
         document.getElementById('playlist-box').style.display = 'none';
