@@ -3259,7 +3259,7 @@
 
        toast('Queueing Zip Job...', 'in');
        try {
-           const p = buildParams(0);
+           const p = buildParams(0, false);
            const payload = Object.fromEntries(p.entries());
            
            const res = await fetch('/api/zip_jobs', {
@@ -3294,9 +3294,9 @@
       btn.classList.toggle('asc', libOrder === 'desc');
       loadMedia(true);
     }
-    function buildParams(off = 0) {
+    function buildParams(off = 0, forLibrary = true) {
       const p = new URLSearchParams({
-        mode: libMode,
+        mode: forLibrary ? 'all' : libMode,
         sort_by: document.getElementById('sort-field').value,
         order: libOrder, limit: LIB_LIMIT, offset: off,
       });
@@ -3339,7 +3339,7 @@
     async function loadMedia(reset = false) {
       if (reset) { libPage = 0; }
       try {
-        const res = await fetch('/api/media?' + buildParams(libPage * LIB_LIMIT));
+        const res = await fetch('/api/media?' + buildParams(libPage * LIB_LIMIT, true));
         const data = await res.json();
         const items = data.items || [];
         libTotal = Number(data.total || 0);
@@ -3462,7 +3462,7 @@
 
     async function loadSubLangsFilter() {
       try {
-        const langs = await (await fetch('/api/sub_langs?mode=' + libMode)).json();
+        const langs = await (await fetch('/api/sub_langs?mode=all')).json();
         const sel = document.getElementById('f-sub-lang');
         const cur = sel.value;
         const disp = new Intl.DisplayNames(['en'], { type: 'language' });

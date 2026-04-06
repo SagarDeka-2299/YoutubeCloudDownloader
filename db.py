@@ -233,8 +233,11 @@ def query_media(
     sb = sort_by if sort_by in _allowed else "download_date"
     od = "DESC" if order.lower() == "desc" else "ASC"
 
-    cond: list[str] = ["mode=?"]
-    params: list[Any] = [mode]
+    cond: list[str] = []
+    params: list[Any] = []
+    if mode != "all":
+        cond.append("mode=?")
+        params.append(mode)
 
     if channel_id is not None:
         cond.append("channel_id=?"); params.append(channel_id)
@@ -252,7 +255,7 @@ def query_media(
         cond.append("EXISTS (SELECT 1 FROM transcripts t WHERE t.media_id = media.id AND t.language = ?)")
         params.append(sub_lang.strip())
 
-    where_sql = f"WHERE {' AND '.join(cond)}"
+    where_sql = f"WHERE {' AND '.join(cond)}" if cond else ""
     fetch = (limit * 4) if tags else limit
     sql = f"SELECT * FROM media {where_sql} ORDER BY {sb} {od} LIMIT ? OFFSET ?"
     params += [fetch, offset]
@@ -297,8 +300,11 @@ def query_media_stats(
     tags: list[str] | None = None,
     sub_lang: str | None = None,
 ) -> dict[str, int]:
-    cond: list[str] = ["mode=?"]
-    params: list[Any] = [mode]
+    cond: list[str] = []
+    params: list[Any] = []
+    if mode != "all":
+        cond.append("mode=?")
+        params.append(mode)
 
     if channel_id is not None:
         cond.append("channel_id=?"); params.append(channel_id)
@@ -316,7 +322,7 @@ def query_media_stats(
         cond.append("EXISTS (SELECT 1 FROM transcripts t WHERE t.media_id = media.id AND t.language = ?)")
         params.append(sub_lang.strip())
 
-    where_sql = f"WHERE {' AND '.join(cond)}"
+    where_sql = f"WHERE {' AND '.join(cond)}" if cond else ""
     with _conn() as c:
         rows = [dict(r) for r in c.execute(
             f"SELECT file_size, duration, tags FROM media {where_sql}",
@@ -356,10 +362,15 @@ def get_channels() -> list[dict]:
 
 def get_all_tags(mode: str = "audio") -> list[str]:
     with _conn() as c:
-        rows = c.execute(
-            "SELECT tags FROM media WHERE mode=? AND tags NOT IN ('[]','null','') AND tags IS NOT NULL",
-            (mode,),
-        ).fetchall()
+        if mode == "all":
+            rows = c.execute(
+                "SELECT tags FROM media WHERE tags NOT IN ('[]','null','') AND tags IS NOT NULL"
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT tags FROM media WHERE mode=? AND tags NOT IN ('[]','null','') AND tags IS NOT NULL",
+                (mode,),
+            ).fetchall()
     tag_set: set[str] = set()
     for (ts,) in rows:
         try:
@@ -371,12 +382,19 @@ def get_all_tags(mode: str = "audio") -> list[str]:
 
 def get_all_sub_langs(mode: str = "audio") -> list[str]:
     with _conn() as c:
-        rows = c.execute(
-            "SELECT DISTINCT t.language FROM transcripts t "
-            "JOIN media m ON t.media_id = m.id "
-            "WHERE m.mode=? ORDER BY t.language ASC",
-            (mode,)
-        ).fetchall()
+        if mode == "all":
+            rows = c.execute(
+                "SELECT DISTINCT t.language FROM transcripts t "
+                "JOIN media m ON t.media_id = m.id "
+                "ORDER BY t.language ASC"
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT DISTINCT t.language FROM transcripts t "
+                "JOIN media m ON t.media_id = m.id "
+                "WHERE m.mode=? ORDER BY t.language ASC",
+                (mode,)
+            ).fetchall()
     return [r[0] for r in rows if r[0]]
 
 

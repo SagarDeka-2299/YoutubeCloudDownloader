@@ -1940,7 +1940,7 @@ async def preview_by_url(
 # ── Media library ──────────────────────────────────────────────────────────────
 @app.get("/api/media")
 async def list_media(
-    mode:         Literal["audio", "video"] = "audio",
+    mode:         Literal["audio", "video", "all"] = "audio",
     channel_id:   int | None = None,
     min_views:    int | None = None,
     max_views:    int | None = None,
@@ -1986,13 +1986,13 @@ async def list_channels() -> list[dict]:
 
 
 @app.get("/api/sub_langs")
-async def list_sub_langs(mode: str = "audio") -> list[str]:
+async def list_sub_langs(mode: Literal["audio", "video", "all"] = "audio") -> list[str]:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, db.get_all_sub_langs, mode)
 
 
 @app.get("/api/tags")
-async def list_tags(mode: Literal["audio", "video"] = "audio") -> list[str]:
+async def list_tags(mode: Literal["audio", "video", "all"] = "audio") -> list[str]:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, db.get_all_tags, mode)
 
