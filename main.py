@@ -882,18 +882,19 @@ def _canonical_source_url(url: str) -> str:
         return raw
     host = (parsed.netloc or "").lower()
     host_base = host.removeprefix("www.").removeprefix("m.")
+    path = (parsed.path or "/").rstrip("/") or "/"
     query = parse_qs(parsed.query or "")
     list_id = str((query.get("list") or [""])[0] or "").strip()
-    if host_base in {"youtube.com", "youtu.be"} and list_id:
-        return f"https://www.youtube.com/playlist?list={list_id}"
     video_id = extract_youtube_id(raw)
     if host_base in {"youtube.com", "youtu.be"} and video_id:
         return f"https://www.youtube.com/watch?v={video_id}"
+    if host_base in {"youtube.com", "youtu.be"} and list_id:
+        if path in {"/playlist", "/watch"} or path.startswith("/playlist"):
+            return f"https://www.youtube.com/playlist?list={list_id}"
+        return f"https://www.youtube.com/playlist?list={list_id}"
     if host_base == "youtube.com":
-        path = (parsed.path or "/").rstrip("/") or "/"
         cleaned = parsed._replace(netloc="www.youtube.com", path=path, params="", query="", fragment="")
         return urlunparse(cleaned)
-    path = (parsed.path or "/").rstrip("/") or parsed.path or "/"
     cleaned = parsed._replace(path=path, params="", fragment="")
     return urlunparse(cleaned)
 

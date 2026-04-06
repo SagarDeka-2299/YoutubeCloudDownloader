@@ -1537,10 +1537,8 @@
       try {
         const u = new URL(withScheme);
         const host = (u.hostname || '').toLowerCase().replace(/^www\./, '').replace(/^m\./, '');
+        const path = (u.pathname || '/').replace(/\/+$/, '') || '/';
         const listId = u.searchParams.get('list');
-        if ((host === 'youtube.com' || host === 'youtu.be') && listId) {
-          return `https://www.youtube.com/playlist?list=${listId}`;
-        }
         const qv = u.searchParams.get('v');
         let vid = qv || '';
         if (!vid && host === 'youtu.be') {
@@ -1553,7 +1551,9 @@
         if ((host === 'youtube.com' || host === 'youtu.be') && /^[0-9A-Za-z_-]{11}$/.test(vid)) {
           return `https://www.youtube.com/watch?v=${vid}`;
         }
-        const path = (u.pathname || '/').replace(/\/+$/, '') || '/';
+        if ((host === 'youtube.com' || host === 'youtu.be') && listId) {
+          return `https://www.youtube.com/playlist?list=${listId}`;
+        }
         if (host === 'youtube.com') return `https://www.youtube.com${path}`;
         u.pathname = path;
         u.hash = '';
