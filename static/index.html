@@ -2130,7 +2130,7 @@
         dlBtn.style.display = 'none';
         return;
       }
-      if (currentInquiryStatus !== 'done' || Number(currentPreviewTotal || 0) <= 0) {
+      if (currentInquiryStatus !== 'done') {
         dlBtn.style.display = 'none';
         return;
       }
@@ -2144,6 +2144,10 @@
         dlBtn.style.display = 'inline-flex';
         dlBtn.querySelector('#dl-txt').textContent = 'Download';
         dlBtn.onclick = () => submitSingleJob(videoUrl, getEntrySubtitleSelection(entry || { url: videoUrl }), null);
+        return;
+      }
+      if (Number(currentPreviewTotal || 0) <= 0) {
+        dlBtn.style.display = 'none';
         return;
       }
       if (!currentPlaylistUrl) {
