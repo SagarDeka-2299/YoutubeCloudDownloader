@@ -227,6 +227,17 @@ def _find_variant_abspath(record: dict, desired_mode: str) -> Path | None:
     return ordered[0] if ordered else None
 
 
+def _record_has_media_on_disk(record: dict | None) -> bool:
+    if not record:
+        return False
+    for desired_mode in ("audio", "video"):
+        fp = _find_variant_abspath(record, desired_mode)
+        if fp and fp.exists():
+            return True
+    primary = _resolve_media_abspath(record)
+    return primary.exists()
+
+
 def _ensure_file_in_mode_folder(path: Path, mode: str, target_subdir: str = "") -> Path:
     base = _base_dir_for_mode(mode).resolve()
     target_dir = (base / target_subdir.strip("/")).resolve() if target_subdir else base
@@ -1500,7 +1511,7 @@ async def _enqueue_job(
     y_id = extract_youtube_id(url)
     if y_id:
         existing = await loop.run_in_executor(None, db.get_media_by_youtube_id, y_id)
-        if existing:
+        if _record_has_media_on_disk(existing):
             log("⚠️", f"Duplicate detected: youtube_id={y_id}")
             return None, existing
 
@@ -1541,7 +1552,7 @@ async def create_job(req: JobRequest) -> dict:
         inquiry_id=req.inquiry_id,
     )
     if existing:
-        raise HTTPException(status_code=409, detail={"duplicate": True, "media": existing})
+        return {"skipped_duplicate": True, "media": existing}
     return {"job_id": job_id}
 
 

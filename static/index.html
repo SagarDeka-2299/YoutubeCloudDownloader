@@ -2295,12 +2295,12 @@
             });
             const data = await res.json().catch(()=>({}));
             
-            if (res.status === 409 && data.detail?.duplicate) {
-               const ex = data.detail.media;
-               toast(`Already downloaded: ${ex.title || 'this video'}`, 'in');
+            if (!res.ok) throw new Error(data.detail || 'HTTP ' + res.status);
+            if (data.skipped_duplicate && data.media) {
+               const ex = data.media;
+               toast(`Skipped duplicate: ${ex.title || 'this video'}`, 'in');
                return;
             }
-            if (!res.ok) throw new Error(data.detail || 'HTTP ' + res.status);
             toast('Download queued!', 'in');
         } catch(e) {
             toast('Error: ' + e.message, 'er');
