@@ -1040,7 +1040,10 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
                             db.upsert_preview_item(url, item)
                         cached_source = db.get_preview_source(url)
                         cached_items = db.get_preview_items(url)
-        if cached_source and cached_items and _is_updated_within_24h(cached_source.get("updated_at")):
+        cached_total = len(cached_items)
+        source_total = int(cached_source.get("total_count") or 0) if cached_source else 0
+        cache_consistent = (source_total <= 0) or (cached_total >= source_total)
+        if cached_source and cached_items and cache_consistent and _is_updated_within_24h(cached_source.get("updated_at")):
             src_type = str(cached_source.get("source_type") or ("video" if len(cached_items) == 1 else "playlist"))
             total_count = int(cached_source.get("total_count") or len(cached_items))
             first = cached_items[0]
@@ -1158,7 +1161,11 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
                     if row:
                         db.upsert_preview_item(url, row)
                     else:
-                        db.upsert_preview_item(url, cached)
+                        fallback_row = _fallback_preview_row_from_entry(entry, fallback_index=idx)
+                        if fallback_row:
+                            db.upsert_preview_item(url, fallback_row)
+                        else:
+                            db.upsert_preview_item(url, cached)
             else:
                 try:
                     item_info = _yt_dlp_info(raw_entry_url or entry_url)
@@ -1167,6 +1174,10 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
                 row = _sanitize_preview_entry(item_info, fallback_index=idx)
                 if row:
                     db.upsert_preview_item(url, row)
+                else:
+                    fallback_row = _fallback_preview_row_from_entry(entry, fallback_index=idx)
+                    if fallback_row:
+                        db.upsert_preview_item(url, fallback_row)
             processed += 1
             db.inquiry_update(
                 inquiry_id,
@@ -1374,6 +1385,32 @@ def _sanitize_preview_entry(info: dict | None, *, fallback_index: int = 0) -> di
         "like_count": info.get("like_count"),
         "subtitles": sub_langs,
         "playlist_index": int(info.get("playlist_index") or fallback_index),
+    }
+
+
+def _fallback_preview_row_from_entry(entry: dict | None, *, fallback_index: int) -> dict | None:
+    if not entry:
+        return None
+    title = str(entry.get("title") or "").strip()
+    if not title:
+        return None
+    title_l = title.lower()
+    if "private video" in title_l or "deleted video" in title_l:
+        return None
+    raw_url = str(entry.get("webpage_url") or entry.get("url") or "").strip()
+    url = _canonical_video_url(raw_url)
+    if not url:
+        return None
+    return {
+        "url": url,
+        "title": title,
+        "thumbnail": entry.get("thumbnail"),
+        "uploader": entry.get("uploader") or entry.get("channel"),
+        "duration": entry.get("duration"),
+        "view_count": entry.get("view_count"),
+        "like_count": entry.get("like_count"),
+        "subtitles": [],
+        "playlist_index": int(entry.get("playlist_index") or fallback_index),
     }
 
 
