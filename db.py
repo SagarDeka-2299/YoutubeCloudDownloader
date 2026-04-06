@@ -430,6 +430,34 @@ def update_media_path(media_id: int, new_path: str) -> None:
         c.commit()
 
 
+def update_media_file_record(
+    media_id: int,
+    *,
+    mode: str,
+    file_path: str,
+    file_name: str,
+    file_size: int | None = None,
+) -> None:
+    with _conn() as c:
+        if file_size is None:
+            c.execute(
+                "UPDATE media SET mode=?, file_path=?, file_name=? WHERE id=?",
+                (mode, file_path, file_name, media_id),
+            )
+        else:
+            c.execute(
+                "UPDATE media SET mode=?, file_path=?, file_name=?, file_size=? WHERE id=?",
+                (mode, file_path, file_name, file_size, media_id),
+            )
+        c.commit()
+
+
+def list_all_media_records() -> list[dict]:
+    with _conn() as c:
+        rows = c.execute("SELECT * FROM media ORDER BY id ASC").fetchall()
+        return [dict(r) for r in rows]
+
+
 # ── Transcripts ──────────────────────────────────────────────────────────────────
 
 def insert_transcript(media_id: int, lang: str, text: str) -> None:

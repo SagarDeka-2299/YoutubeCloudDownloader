@@ -47,6 +47,9 @@ AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 VIDEO_DIR.mkdir(parents=True, exist_ok=True)
 ZIPS_DIR.mkdir(parents=True, exist_ok=True)
 
+_AUDIO_EXTS = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus"}
+_VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v"}
+
 MAX_CONCURRENT   = int(os.environ.get("MAX_CONCURRENT", "3"))
 _FFMPEG_LOCATION = shutil.which("ffmpeg")
 _COOKIES_FILE    = os.environ.get("COOKIES_FILE", "")  # path to Netscape cookies.txt
@@ -146,6 +149,106 @@ _inquiry_retry_batches: dict[str, dict[str, dict[str, Any]]] = {}
 _inquiry_retry_task: asyncio.Task | None = None
 
 
+def _mode_for_extension(path: Path, fallback: str = "audio") -> str:
+    suffix = path.suffix.lower()
+    if suffix in _VIDEO_EXTS:
+        return "video"
+    if suffix in _AUDIO_EXTS:
+        return "audio"
+    return fallback
+
+
+def _base_dir_for_mode(mode: str) -> Path:
+    return AUDIO_DIR if mode == "audio" else VIDEO_DIR
+
+
+def _as_relative_path(path: Path, base_dir: Path) -> str:
+    rel = path.resolve().relative_to(base_dir.resolve())
+    return str(rel).replace("\\", "/")
+
+
+def _resolve_media_abspath(record: dict) -> Path:
+    raw = str(record.get("file_path") or "").strip()
+    mode = str(record.get("mode") or "audio")
+    base = _base_dir_for_mode(mode)
+    if raw:
+        p = Path(raw)
+        if p.is_absolute():
+            return p
+        candidate = (base / raw).resolve()
+        if candidate.exists():
+            return candidate
+    name = str(record.get("file_name") or "").strip()
+    if name:
+        for root in (AUDIO_DIR, VIDEO_DIR):
+            for hit in root.rglob(name):
+                if hit.is_file():
+                    return hit.resolve()
+    if raw:
+        return (base / raw).resolve()
+    return (base / name).resolve()
+
+
+def _ensure_file_in_mode_folder(path: Path, mode: str, target_subdir: str = "") -> Path:
+    base = _base_dir_for_mode(mode).resolve()
+    target_dir = (base / target_subdir.strip("/")).resolve() if target_subdir else base
+    target_dir.mkdir(parents=True, exist_ok=True)
+    src = path.resolve()
+    if str(src).startswith(str(base) + os.sep):
+        return src
+    dst = (target_dir / src.name).resolve()
+    if src == dst:
+        return src
+    if dst.exists():
+        stem, suf = dst.stem, dst.suffix
+        i = 1
+        while True:
+            candidate = dst.with_name(f"{stem}_{i}{suf}")
+            if not candidate.exists():
+                dst = candidate
+                break
+            i += 1
+    shutil.move(str(src), str(dst))
+    return dst
+
+
+def _migrate_media_storage_layout() -> None:
+    moved = 0
+    updated = 0
+    records = db.list_all_media_records()
+    for rec in records:
+        media_id = int(rec.get("id"))
+        current_abs = _resolve_media_abspath(rec)
+        mode = _mode_for_extension(current_abs, fallback=str(rec.get("mode") or "audio"))
+        if current_abs.exists():
+            rel_hint = str(rec.get("file_path") or "").replace("\\", "/").strip()
+            subdir = Path(rel_hint).parent.as_posix() if rel_hint and not Path(rel_hint).is_absolute() else ""
+            target_abs = _ensure_file_in_mode_folder(current_abs, mode, subdir)
+            if target_abs != current_abs:
+                moved += 1
+            rel = _as_relative_path(target_abs, _base_dir_for_mode(mode))
+            size = target_abs.stat().st_size if target_abs.exists() else int(rec.get("file_size") or 0)
+            db.update_media_file_record(
+                media_id,
+                mode=mode,
+                file_path=rel,
+                file_name=target_abs.name,
+                file_size=size,
+            )
+            updated += 1
+
+    for root, dest_mode in ((AUDIO_DIR, "video"), (VIDEO_DIR, "audio")):
+        for fp in root.rglob("*"):
+            if not fp.is_file():
+                continue
+            target_mode = _mode_for_extension(fp, fallback=dest_mode)
+            if (root == AUDIO_DIR and target_mode == "video") or (root == VIDEO_DIR and target_mode == "audio"):
+                _ensure_file_in_mode_folder(fp, target_mode)
+                moved += 1
+
+    log("🧹", f"Storage migration complete — updated={updated} moved={moved}")
+
+
 # ── yt-dlp post-processor: saves to DB after ffmpeg is done ───────────────────
 class _SaveToDB(yt_dlp.postprocessor.PostProcessor):
     """
@@ -182,6 +285,26 @@ class _SaveToDB(yt_dlp.postprocessor.PostProcessor):
                           or info.get("_filename") or "")
             log("💾", f"[{job_short}] fallback path={final_path!r}")
 
+        # Normalize final file placement by extension and keep DB path relative.
+        final_obj = Path(final_path).resolve() if final_path else Path()
+        stored_mode = _mode_for_extension(final_obj, fallback=self._mode)
+        target_subdir = (self._job.target_path or "").strip("/")
+        if final_obj and final_obj.exists():
+            final_obj = _ensure_file_in_mode_folder(final_obj, stored_mode, target_subdir)
+            final_path = str(final_obj)
+
+        # If yt-dlp kept a merged mp4 in the audio folder, move it under VIDEO_DIR.
+        for dl in downloads:
+            side_path = str(dl.get("filepath") or dl.get("filename") or "").strip()
+            if not side_path:
+                continue
+            p = Path(side_path).resolve()
+            if not p.exists() or p == final_obj:
+                continue
+            side_mode = _mode_for_extension(p, fallback=self._mode)
+            if side_mode == "video":
+                _ensure_file_in_mode_folder(p, "video", target_subdir)
+
         # Get actual size from disk if not provided
         if not final_size and final_path and Path(final_path).exists():
             final_size = Path(final_path).stat().st_size
@@ -205,6 +328,7 @@ class _SaveToDB(yt_dlp.postprocessor.PostProcessor):
         log("💾", f"[{job_short}] upserting channel {channel_id!r} → {channel_name!r}")
         ch_db_id = db.upsert_channel(channel_id, channel_name, channel_url) if channel_id else None
 
+        rel_path = _as_relative_path(Path(final_path), _base_dir_for_mode(stored_mode))
         media_data = {
             "youtube_id":    info.get("id"),
             "title":         info.get("title"),
@@ -218,10 +342,10 @@ class _SaveToDB(yt_dlp.postprocessor.PostProcessor):
             "release_date":  release_date,
             "thumbnail":     info.get("thumbnail"),
             "youtube_url":   info.get("webpage_url"),
-            "file_path":     final_path,
+            "file_path":     rel_path,
             "file_name":     Path(final_path).name,
             "file_size":     final_size,
-            "mode":          self._mode,
+            "mode":          stored_mode,
             "quality":       self._quality,
         }
         log("💾", f"[{job_short}] calling db.upsert_media — file={Path(final_path).name!r}")
@@ -592,6 +716,7 @@ async def _startup() -> None:
     log("🚀", "App starting up — initialising DB")
     db.init_db()
     log("🗄️", "DB initialised")
+    _migrate_media_storage_layout()
     # Mark orphaned active rows as error (server was killed mid-download)
     rows, _ = db.queue_list(0, 9999)
     for row in rows:
@@ -1967,14 +2092,11 @@ async def list_media(
         mode, channel_id, min_views, max_views, min_likes,
         min_duration, max_duration, tag_list, sub_lang,
     )
-    base_str = str(AUDIO_DIR.resolve()) if mode == "audio" else str(VIDEO_DIR.resolve())
-    prefix   = "/files/audio/" if mode == "audio" else "/files/video/"
     for item in items:
-        fp = item.get("file_path") or ""
-        if fp.startswith(base_str):
-            rel = fp[len(base_str):].lstrip("/\\").replace("\\", "/")
-        else:
-            rel = item.get("file_name") or ""
+        item_mode = str(item.get("mode") or "audio")
+        prefix = "/files/audio/" if item_mode == "audio" else "/files/video/"
+        fp = str(item.get("file_path") or "").replace("\\", "/").lstrip("/")
+        rel = fp if fp else str(item.get("file_name") or "")
         item["download_url"] = prefix + "/".join(p for p in rel.split("/") if p)
     return {"items": items, "total": total, "stats": stats}
 
@@ -2056,9 +2178,9 @@ async def _zip_worker(job_id: str, client_ip: str, req: ZipJobRequest, cancel_ev
                     if i % max(1, total // 50) == 0 or i == total - 1:
                         db.zip_update(job_id, percent=round((i / total) * 100, 1), title=f"Zipped {i}/{total}")
                     
-                    fp = it.get("file_path")
-                    if fp and os.path.exists(fp):
-                        zf.write(fp, arcname=os.path.basename(fp))
+                    fp = _resolve_media_abspath(it)
+                    if fp.exists():
+                        zf.write(str(fp), arcname=fp.name)
                         
         await loop.run_in_executor(None, create_zip)
         
@@ -2128,10 +2250,10 @@ async def delete_media(media_id: int) -> dict:
         record = db.get_media_by_id(media_id)
         if not record:
             return False
-        fp = record.get("file_path") or ""
+        fp = _resolve_media_abspath(record)
         if fp:
             try:
-                Path(fp).unlink(missing_ok=True)
+                fp.unlink(missing_ok=True)
                 log("🗑️", f"Deleted file: {fp}")
             except Exception as e:
                 log("⚠️", f"Could not delete file {fp}: {e}")
@@ -2154,23 +2276,31 @@ async def move_media(media_id: int, req: MoveRequest) -> dict:
     record = await loop.run_in_executor(None, db.get_media_by_id, media_id)
     if not record:
         raise HTTPException(status_code=404, detail="Not found")
-    fp = record.get("file_path") or ""
-    if not fp or not Path(fp).exists():
+    src_fp = _resolve_media_abspath(record)
+    if not src_fp or not src_fp.exists():
         raise HTTPException(status_code=404, detail="Source file missing on disk")
-    mode     = record.get("mode")
+    mode     = _mode_for_extension(src_fp, fallback=str(record.get("mode") or "audio"))
     base_dir = AUDIO_DIR if mode == "audio" else VIDEO_DIR
     target_dir = (base_dir / req.new_path.strip("/")).resolve()
     target_dir.mkdir(parents=True, exist_ok=True)
-    new_fp = target_dir / Path(fp).name
-    if str(Path(fp).resolve()) == str(new_fp.resolve()):
+    new_fp = target_dir / src_fp.name
+    if str(src_fp.resolve()) == str(new_fp.resolve()):
         return {"moved": False, "reason": "Already at target"}
     if new_fp.exists():
         raise HTTPException(status_code=400, detail="File already exists in target folder")
 
     def _move():
-        shutil.move(fp, str(new_fp))
-        db.update_media_path(media_id, str(new_fp))
-        log("📦", f"Moved {fp} → {new_fp}")
+        shutil.move(str(src_fp), str(new_fp))
+        rel = _as_relative_path(new_fp, base_dir)
+        size = new_fp.stat().st_size if new_fp.exists() else int(record.get("file_size") or 0)
+        db.update_media_file_record(
+            media_id,
+            mode=mode,
+            file_path=rel,
+            file_name=new_fp.name,
+            file_size=size,
+        )
+        log("📦", f"Moved {src_fp} → {new_fp}")
 
     await loop.run_in_executor(None, _move)
     return {"moved": True, "new_path": str(new_fp)}
