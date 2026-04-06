@@ -26,6 +26,8 @@ import zipfile
 from threading import Lock
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from urllib.parse import quote
+from urllib.request import Request as UrlRequest, urlopen
 
 DOWNLOAD_RETRY_DELAYS = [5, 10, 30, 60, 100, 500, 1000, 3600]
 
@@ -780,6 +782,22 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
                 row = _sanitize_preview_entry(video_info, fallback_index=1)
             if not row:
                 row = _coerce_video_preview_entry(video_info, source_url=url)
+            canonical_url = ""
+            video_id = extract_youtube_id(url)
+            if video_id:
+                canonical_url = f"https://www.youtube.com/watch?v={video_id}"
+            if not row and canonical_url and canonical_url != url:
+                try:
+                    canonical_info = _yt_dlp_info(canonical_url)
+                except Exception:
+                    canonical_info = None
+                row = _sanitize_preview_entry(canonical_info, fallback_index=1)
+                if not row:
+                    row = _coerce_video_preview_entry(canonical_info, source_url=url)
+            if not row:
+                row = _oembed_video_preview_entry(url, source_url=url)
+            if not row and canonical_url and canonical_url != url:
+                row = _oembed_video_preview_entry(canonical_url, source_url=url)
             if not row:
                 raise ValueError("Unsupported or unavailable video")
             db.upsert_preview_source(url, "video", row.get("title"),
@@ -922,6 +940,40 @@ def _coerce_video_preview_entry(info: dict | None, *, source_url: str) -> dict |
         "view_count": info.get("view_count"),
         "like_count": info.get("like_count"),
         "subtitles": sub_langs,
+        "playlist_index": 1,
+    }
+
+
+def _oembed_video_preview_entry(video_url: str, *, source_url: str) -> dict | None:
+    clean_url = str(video_url or "").strip()
+    if not clean_url:
+        return None
+    endpoint = f"https://www.youtube.com/oembed?format=json&url={quote(clean_url, safe='')}"
+    req = UrlRequest(endpoint, headers={
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        )
+    })
+    try:
+        with urlopen(req, timeout=8) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    title = str(payload.get("title") or "").strip()
+    if not title:
+        return None
+    author = str(payload.get("author_name") or "").strip()
+    return {
+        "url": clean_url or source_url,
+        "title": title,
+        "thumbnail": payload.get("thumbnail_url"),
+        "uploader": author,
+        "duration": None,
+        "view_count": None,
+        "like_count": None,
+        "subtitles": [],
         "playlist_index": 1,
     }
 
