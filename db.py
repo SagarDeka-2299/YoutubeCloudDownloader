@@ -395,6 +395,19 @@ def upsert_preview_source(source_url: str, source_type: str, title: str | None,
         c.commit()
 
 
+def get_preview_source(source_url: str) -> dict | None:
+    with _conn() as c:
+        row = c.execute(
+            """
+            SELECT source_url, source_type, title, uploader, total_count, updated_at
+            FROM preview_sources
+            WHERE source_url=?
+            """,
+            (source_url,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def get_preview_items(source_url: str) -> list[dict]:
     with _conn() as c:
         rows = c.execute(

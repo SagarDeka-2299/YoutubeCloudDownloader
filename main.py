@@ -742,6 +742,27 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
     try:
         db.inquiry_update(inquiry_id, status="building", phase="checking_video_ids",
                           detail="Checking current playlist or channel video IDs")
+        cached_source = db.get_preview_source(url)
+        cached_items = db.get_preview_items(url)
+        if cached_source and cached_items and _is_updated_within_24h(cached_source.get("updated_at")):
+            src_type = str(cached_source.get("source_type") or ("video" if len(cached_items) == 1 else "playlist"))
+            total_count = int(cached_source.get("total_count") or len(cached_items))
+            first = cached_items[0]
+            db.inquiry_update(
+                inquiry_id,
+                source_type=src_type,
+                title=cached_source.get("title") or first.get("title") or url,
+                uploader=cached_source.get("uploader") or first.get("uploader") or "",
+                total_count=total_count,
+                processed_count=total_count,
+                status="done",
+                phase="ready",
+                detail="Preview loaded from cache",
+                error_msg="",
+            )
+            threading.Timer(6.0, db.inquiry_delete, args=(inquiry_id,)).start()
+            return
+
         try:
             info = _yt_dlp_info(url, extract_flat="in_playlist")
         except Exception:
@@ -749,12 +770,20 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
         src_type = str(info.get("_type") or "video")
 
         if src_type not in ("playlist", "channel"):
-            video_info = _yt_dlp_info(url)
+            video_info = info
             row = _sanitize_preview_entry(video_info, fallback_index=1)
             if not row:
+                try:
+                    video_info = _yt_dlp_info(url)
+                except Exception:
+                    video_info = info
+                row = _sanitize_preview_entry(video_info, fallback_index=1)
+            if not row:
+                row = _coerce_video_preview_entry(video_info, source_url=url)
+            if not row:
                 raise ValueError("Unsupported or unavailable video")
-            db.upsert_preview_source(url, "video", video_info.get("title"),
-                                     video_info.get("uploader") or video_info.get("channel"), 1)
+            db.upsert_preview_source(url, "video", row.get("title"),
+                                     row.get("uploader"), 1)
             db.upsert_preview_item(url, row)
             db.delete_preview_items_not_in(url, [row["url"]])
             db.inquiry_update(
@@ -844,7 +873,7 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
             inquiry_id,
             status="error",
             phase="error",
-            detail="Inquiry failed",
+            detail=str(exc)[:220] or "Inquiry failed",
             error_msg=str(exc),
         )
         threading.Timer(6.0, db.inquiry_delete, args=(inquiry_id,)).start()
@@ -861,6 +890,40 @@ def _preview_item_is_fresh_24h(item: dict[str, Any] | None) -> bool:
         return (datetime.now() - updated_dt).total_seconds() <= 24 * 3600
     except ValueError:
         return False
+
+
+def _is_updated_within_24h(updated_at: Any) -> bool:
+    ts = str(updated_at or "").strip()
+    if not ts:
+        return False
+    try:
+        updated_dt = datetime.fromisoformat(ts.replace(" ", "T"))
+        return (datetime.now() - updated_dt).total_seconds() <= 24 * 3600
+    except ValueError:
+        return False
+
+
+def _coerce_video_preview_entry(info: dict | None, *, source_url: str) -> dict | None:
+    if not info:
+        return None
+    title = str(info.get("title") or "").strip() or "Video"
+    page_url = str(info.get("webpage_url") or info.get("original_url") or source_url or "").strip()
+    if not page_url:
+        return None
+    subs = info.get("subtitles") or {}
+    auto_subs = info.get("automatic_captions") or {}
+    sub_langs = sorted(set(list(subs.keys()) + list(auto_subs.keys())))
+    return {
+        "url": page_url,
+        "title": title,
+        "thumbnail": info.get("thumbnail"),
+        "uploader": info.get("uploader") or info.get("channel"),
+        "duration": info.get("duration"),
+        "view_count": info.get("view_count"),
+        "like_count": info.get("like_count"),
+        "subtitles": sub_langs,
+        "playlist_index": 1,
+    }
 
 
 def _is_rate_limited_exception(exc: Exception, message: str) -> bool:
