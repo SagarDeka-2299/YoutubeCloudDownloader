@@ -3302,7 +3302,7 @@
     }
     function buildParams(off = 0, forLibrary = true) {
       const p = new URLSearchParams({
-        mode: libMode,
+        mode: forLibrary ? 'all' : libMode,
         sort_by: document.getElementById('sort-field').value,
         order: libOrder, limit: LIB_LIMIT, offset: off,
       });
@@ -3368,7 +3368,7 @@
         document.getElementById('library-total-count').textContent = parts.join(' · ');
         list.innerHTML = '';
         if (!items.length) {
-          list.innerHTML = `<div class="empty"><div class="empty-icon">${libMode === 'audio' ? '🎵' : '🎬'}</div><div>No ${libMode} files yet</div></div>`;
+          list.innerHTML = `<div class="empty"><div class="empty-icon">📂</div><div>No files yet</div></div>`;
           renderLibraryPager();
           return;
         }
@@ -3390,7 +3390,7 @@
       if (item.release_date) meta.push('📅 ' + item.release_date);
       const thumb = item.thumbnail
         ? `<img class="med-thumb" src="${esc(item.thumbnail)}" alt="" loading="lazy"/>`
-        : `<div class="med-thumb-ph">${libMode === 'audio' ? '🎵' : '🎬'}</div>`;
+        : `<div class="med-thumb-ph">${item.mode === 'video' ? '🎬' : '🎵'}</div>`;
       const dlUrl = item.download_url || '#';
       const ytUrl = item.youtube_url || '#';
       div.innerHTML = `

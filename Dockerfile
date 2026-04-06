@@ -5,8 +5,8 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# Install uv directly (avoids dependency on ghcr.io image availability)
+RUN pip install --no-cache-dir uv
 
 WORKDIR /app
 
