@@ -65,7 +65,7 @@ media_before = cur.execute(\"SELECT count(1) FROM media\").fetchone()[0]
 cache_sources_before = cur.execute(\"SELECT count(1) FROM preview_sources\").fetchone()[0]
 cache_items_before = cur.execute(\"SELECT count(1) FROM preview_items\").fetchone()[0]
 
-cur.execute(\"DELETE FROM media WHERE mode IN ('audio','video')\")
+cur.execute(\"DELETE FROM media WHERE mode IN (?,?)\", (\"audio\", \"video\"))
 cur.execute(\"DELETE FROM transcripts\")
 conn.commit()
 
