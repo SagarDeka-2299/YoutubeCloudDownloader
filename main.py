@@ -2179,6 +2179,10 @@ async def list_media(
     min_likes:    int | None = None,
     min_duration: int | None = None,
     max_duration: int | None = None,
+    download_date_start: str | None = None,
+    download_date_end: str | None = None,
+    release_date_start: str | None = None,
+    release_date_end: str | None = None,
     tags:         str | None = None,
     sub_lang:     str | None = None,
     sort_by:      str = "download_date",
@@ -2191,19 +2195,23 @@ async def list_media(
     items, total = await loop.run_in_executor(
         None, db.query_media,
         mode, channel_id, min_views, max_views, min_likes,
-        min_duration, max_duration, tag_list, sub_lang,
+        min_duration, max_duration, download_date_start, download_date_end,
+        release_date_start, release_date_end, tag_list, sub_lang,
         sort_by, order, limit, offset,
     )
     stats = await loop.run_in_executor(
         None, db.query_media_stats,
         mode, channel_id, min_views, max_views, min_likes,
-        min_duration, max_duration, tag_list, sub_lang,
+        min_duration, max_duration, download_date_start, download_date_end,
+        release_date_start, release_date_end, tag_list, sub_lang,
     )
     for item in items:
         audio_fp = _find_variant_abspath(item, "audio")
         video_fp = _find_variant_abspath(item, "video")
         item["audio_download_url"] = _build_download_url(audio_fp, "audio") if audio_fp else ""
         item["video_download_url"] = _build_download_url(video_fp, "video") if video_fp else ""
+        item["audio_file_name"] = audio_fp.name if audio_fp else ""
+        item["video_file_name"] = video_fp.name if video_fp else ""
         if mode == "video":
             item["download_url"] = item["video_download_url"] or item["audio_download_url"]
         else:
@@ -2272,6 +2280,10 @@ class ZipJobRequest(BaseModel):
     min_likes:    int | None = None
     min_duration: int | None = None
     max_duration: int | None = None
+    download_date_start: str | None = None
+    download_date_end: str | None = None
+    release_date_start: str | None = None
+    release_date_end: str | None = None
     tags:         str | None = None
     sub_lang:     str | None = None
     sort_by:      str = "download_date"
@@ -2297,10 +2309,11 @@ async def _zip_worker(job_id: str, client_ip: str, req: ZipJobRequest, cancel_ev
     try:
         tag_list = [t.strip() for t in req.tags.split(",")] if req.tags else None
         
-        items = await loop.run_in_executor(
+        items, _ = await loop.run_in_executor(
             None, db.query_media,
             "all", req.channel_id, req.min_views, req.max_views, req.min_likes,
-            req.min_duration, req.max_duration, tag_list, req.sub_lang,
+            req.min_duration, req.max_duration, req.download_date_start, req.download_date_end,
+            req.release_date_start, req.release_date_end, tag_list, req.sub_lang,
             req.sort_by, req.order, 10000, 0
         )
         

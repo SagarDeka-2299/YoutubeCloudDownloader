@@ -1313,6 +1313,26 @@
             <label>Tags (comma-sep)</label>
             <input type="text" id="f-tags" placeholder="music, rock…" style="width:100%;"/>
           </div>
+          <div style="display:flex; gap:0.5rem; width:100%;">
+            <div class="filter-group" style="flex:1;">
+              <label>Download start</label>
+              <input type="date" id="f-download-date-start" style="width:100%;"/>
+            </div>
+            <div class="filter-group" style="flex:1;">
+              <label>Download end</label>
+              <input type="date" id="f-download-date-end" style="width:100%;"/>
+            </div>
+          </div>
+          <div style="display:flex; gap:0.5rem; width:100%;">
+            <div class="filter-group" style="flex:1;">
+              <label>Release start</label>
+              <input type="date" id="f-release-date-start" style="width:100%;"/>
+            </div>
+            <div class="filter-group" style="flex:1;">
+              <label>Release end</label>
+              <input type="date" id="f-release-date-end" style="width:100%;"/>
+            </div>
+          </div>
         </div>
         <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:1.5rem;">
           <button class="btn-ghost btn-xs" onclick="closeFilterModal()">Cancel</button>
@@ -2996,7 +3016,7 @@
     }
 
     function clearFilters() {
-      ['f-channel', 'f-sub-lang', 'f-dur-min', 'f-dur-max', 'f-views', 'f-likes', 'f-tags'].forEach(id => {
+      ['f-channel', 'f-sub-lang', 'f-dur-min', 'f-dur-max', 'f-views', 'f-likes', 'f-tags', 'f-download-date-start', 'f-download-date-end', 'f-release-date-start', 'f-release-date-end'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.value = '';
       });
@@ -3022,6 +3042,10 @@
       const views = document.getElementById('f-views').value;
       const likes = document.getElementById('f-likes').value;
       const tags = document.getElementById('f-tags').value.trim();
+      const downloadDateStart = document.getElementById('f-download-date-start').value;
+      const downloadDateEnd = document.getElementById('f-download-date-end').value;
+      const releaseDateStart = document.getElementById('f-release-date-start').value;
+      const releaseDateEnd = document.getElementById('f-release-date-end').value;
       if (ch) p.set('channel_id', ch);
       if (subL) p.set('sub_lang', subL);
       if (durMn) p.set('min_duration', parseInt(durMn) * 60);
@@ -3029,6 +3053,10 @@
       if (views) p.set('min_views', views);
       if (likes) p.set('min_likes', likes);
       if (tags) p.set('tags', tags);
+      if (downloadDateStart) p.set('download_date_start', downloadDateStart);
+      if (downloadDateEnd) p.set('download_date_end', downloadDateEnd);
+      if (releaseDateStart) p.set('release_date_start', releaseDateStart);
+      if (releaseDateEnd) p.set('release_date_end', releaseDateEnd);
       return p;
     }
     function renderLibraryPager() {
@@ -3113,6 +3141,9 @@
       const dlUrl = libMode === 'video'
         ? (item.video_download_url || item.download_url || item.audio_download_url || '#')
         : (item.audio_download_url || item.download_url || item.video_download_url || '#');
+      const dlName = libMode === 'video'
+        ? (item.video_file_name || item.file_name || '')
+        : (item.audio_file_name || item.file_name || '');
       const ytUrl = item.youtube_url || '#';
       div.innerHTML = `
     ${thumb}
@@ -3122,7 +3153,7 @@
       <div class="med-meta">${meta.join('<span style="opacity:.3"> · </span>')}</div>
       ${tags ? `<div class="med-tags">${tags}</div>` : ''}
       <div class="med-actions">
-        <a href="${esc(dlUrl)}" download="${esc(item.file_name || '')}">
+        <a href="${esc(dlUrl)}" download="${esc(dlName)}">
           <button class="btn-xs btn-ghost">⬇ Save</button>
         </a>
         <button class="btn-xs btn-ghost" onclick="readTranscript(${item.id})">📝 Transcript</button>

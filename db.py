@@ -221,6 +221,10 @@ def query_media(
     min_likes: int | None = None,
     min_duration: int | None = None,
     max_duration: int | None = None,
+    download_date_start: str | None = None,
+    download_date_end: str | None = None,
+    release_date_start: str | None = None,
+    release_date_end: str | None = None,
     tags: list[str] | None = None,
     sub_lang: str | None = None,
     sort_by: str = "download_date",
@@ -251,6 +255,14 @@ def query_media(
         cond.append("COALESCE(duration,0)>=?"); params.append(min_duration)
     if max_duration is not None:
         cond.append("COALESCE(duration,0)<=?"); params.append(max_duration)
+    if download_date_start:
+        cond.append("date(download_date)>=date(?)"); params.append(download_date_start)
+    if download_date_end:
+        cond.append("date(download_date)<=date(?)"); params.append(download_date_end)
+    if release_date_start:
+        cond.append("date(release_date)>=date(?)"); params.append(release_date_start)
+    if release_date_end:
+        cond.append("date(release_date)<=date(?)"); params.append(release_date_end)
     if sub_lang is not None and sub_lang.strip():
         cond.append("EXISTS (SELECT 1 FROM transcripts t WHERE t.media_id = media.id AND t.language = ?)")
         params.append(sub_lang.strip())
@@ -297,6 +309,10 @@ def query_media_stats(
     min_likes: int | None = None,
     min_duration: int | None = None,
     max_duration: int | None = None,
+    download_date_start: str | None = None,
+    download_date_end: str | None = None,
+    release_date_start: str | None = None,
+    release_date_end: str | None = None,
     tags: list[str] | None = None,
     sub_lang: str | None = None,
 ) -> dict[str, int]:
@@ -318,6 +334,14 @@ def query_media_stats(
         cond.append("COALESCE(duration,0)>=?"); params.append(min_duration)
     if max_duration is not None:
         cond.append("COALESCE(duration,0)<=?"); params.append(max_duration)
+    if download_date_start:
+        cond.append("date(download_date)>=date(?)"); params.append(download_date_start)
+    if download_date_end:
+        cond.append("date(download_date)<=date(?)"); params.append(download_date_end)
+    if release_date_start:
+        cond.append("date(release_date)>=date(?)"); params.append(release_date_start)
+    if release_date_end:
+        cond.append("date(release_date)<=date(?)"); params.append(release_date_end)
     if sub_lang is not None and sub_lang.strip():
         cond.append("EXISTS (SELECT 1 FROM transcripts t WHERE t.media_id = media.id AND t.language = ?)")
         params.append(sub_lang.strip())
