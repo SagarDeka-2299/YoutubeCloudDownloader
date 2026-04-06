@@ -4,6 +4,7 @@ main.py – YTGrab backend
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shutil
@@ -26,7 +27,7 @@ import zipfile
 from threading import Lock
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse, urlunparse
 from urllib.request import Request as UrlRequest, urlopen
 
 DOWNLOAD_RETRY_DELAYS = [5, 10, 30, 60, 100, 500, 1000, 3600]
@@ -667,6 +668,65 @@ def extract_youtube_id(url: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _canonical_video_url(url: str) -> str:
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    if not raw.startswith(("http://", "https://")):
+        raw = f"https://{raw}"
+    video_id = extract_youtube_id(raw)
+    if video_id:
+        return f"https://www.youtube.com/watch?v={video_id}"
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return raw
+    if not parsed.scheme or not parsed.netloc:
+        return raw
+    path = parsed.path.rstrip("/") or parsed.path or "/"
+    cleaned = parsed._replace(path=path, params="", query="", fragment="")
+    return urlunparse(cleaned)
+
+
+def _canonical_source_url(url: str) -> str:
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    if not raw.startswith(("http://", "https://")):
+        raw = f"https://{raw}"
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return raw
+    host = (parsed.netloc or "").lower()
+    host_base = host.removeprefix("www.").removeprefix("m.")
+    query = parse_qs(parsed.query or "")
+    list_id = str((query.get("list") or [""])[0] or "").strip()
+    if host_base in {"youtube.com", "youtu.be"} and list_id:
+        return f"https://www.youtube.com/playlist?list={list_id}"
+    video_id = extract_youtube_id(raw)
+    if host_base in {"youtube.com", "youtu.be"} and video_id:
+        return f"https://www.youtube.com/watch?v={video_id}"
+    if host_base == "youtube.com":
+        path = (parsed.path or "/").rstrip("/") or "/"
+        cleaned = parsed._replace(netloc="www.youtube.com", path=path, params="", query="", fragment="")
+        return urlunparse(cleaned)
+    path = (parsed.path or "/").rstrip("/") or parsed.path or "/"
+    cleaned = parsed._replace(path=path, params="", fragment="")
+    return urlunparse(cleaned)
+
+
+def _playlist_id_from_url(url: str) -> str:
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw if raw.startswith(("http://", "https://")) else f"https://{raw}")
+    except Exception:
+        return ""
+    return str((parse_qs(parsed.query or {}).get("list") or [""])[0] or "").strip()
+
+
 def _normalize_subtitles(subtitles: list[str] | None) -> list[str]:
     cleaned: list[str] = []
     seen: set[str] = set()
@@ -742,10 +802,33 @@ def _sort_and_filter_preview_items(
 
 def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
     try:
+        url = _canonical_source_url(url)
         db.inquiry_update(inquiry_id, status="building", phase="checking_video_ids",
                           detail="Checking current playlist or channel video IDs")
         cached_source = db.get_preview_source(url)
         cached_items = db.get_preview_items(url)
+        if not cached_source or not cached_items:
+            playlist_id = _playlist_id_from_url(url)
+            if playlist_id:
+                alias = db.find_preview_source_by_playlist_id(playlist_id, exclude_source_url=url)
+                if alias:
+                    alias_items = db.get_preview_items(alias["source_url"])
+                    if alias_items and _is_updated_within_24h(alias.get("updated_at")):
+                        db.upsert_preview_source(
+                            url,
+                            alias.get("source_type") or "playlist",
+                            alias.get("title"),
+                            alias.get("uploader"),
+                            int(alias.get("total_count") or len(alias_items)),
+                        )
+                        for item in alias_items:
+                            alias_url = _canonical_video_url(item.get("url") or "")
+                            if not alias_url:
+                                continue
+                            item["url"] = alias_url
+                            db.upsert_preview_item(url, item)
+                        cached_source = db.get_preview_source(url)
+                        cached_items = db.get_preview_items(url)
         if cached_source and cached_items and _is_updated_within_24h(cached_source.get("updated_at")):
             src_type = str(cached_source.get("source_type") or ("video" if len(cached_items) == 1 else "playlist"))
             total_count = int(cached_source.get("total_count") or len(cached_items))
@@ -821,7 +904,13 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
 
         entries = [e for e in list(info.get("entries") or []) if _is_supported_playlist_entry(e)]
         db.upsert_preview_source(url, src_type, info.get("title"), info.get("uploader") or info.get("channel"), len(entries))
-        cached_items = {item["url"]: item for item in db.get_preview_items(url)}
+        cached_items: dict[str, dict[str, Any]] = {}
+        for item in db.get_preview_items(url):
+            item_key = _canonical_video_url(item.get("url") or "")
+            if not item_key:
+                continue
+            item["url"] = item_key
+            cached_items[item_key] = item
         current_urls: list[str] = []
         db.inquiry_update(
             inquiry_id,
@@ -838,18 +927,20 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
 
         processed = 0
         for idx, entry in enumerate(entries, start=1):
-            entry_url = str(entry.get("url") or "").strip()
+            raw_entry_url = str(entry.get("url") or "").strip()
+            entry_url = _canonical_video_url(raw_entry_url)
             if not entry_url:
                 continue
             current_urls.append(entry_url)
             cached = cached_items.get(entry_url)
             if cached:
+                cached["url"] = entry_url
                 cached["playlist_index"] = idx
                 if _preview_item_is_fresh_24h(cached):
                     db.upsert_preview_item(url, cached)
                 else:
                     try:
-                        item_info = _yt_dlp_info(entry_url)
+                        item_info = _yt_dlp_info(raw_entry_url or entry_url)
                     except Exception:
                         item_info = None
                     row = _sanitize_preview_entry(item_info, fallback_index=idx)
@@ -859,7 +950,7 @@ def _run_inquiry_sync(inquiry_id: str, url: str) -> None:
                         db.upsert_preview_item(url, cached)
             else:
                 try:
-                    item_info = _yt_dlp_info(entry_url)
+                    item_info = _yt_dlp_info(raw_entry_url or entry_url)
                 except Exception:
                     item_info = None
                 row = _sanitize_preview_entry(item_info, fallback_index=idx)
@@ -925,7 +1016,7 @@ def _coerce_video_preview_entry(info: dict | None, *, source_url: str) -> dict |
     if not info:
         return None
     title = str(info.get("title") or "").strip() or "Video"
-    page_url = str(info.get("webpage_url") or info.get("original_url") or source_url or "").strip()
+    page_url = _canonical_video_url(str(info.get("webpage_url") or info.get("original_url") or source_url or "").strip())
     if not page_url:
         return None
     subs = info.get("subtitles") or {}
@@ -945,7 +1036,7 @@ def _coerce_video_preview_entry(info: dict | None, *, source_url: str) -> dict |
 
 
 def _oembed_video_preview_entry(video_url: str, *, source_url: str) -> dict | None:
-    clean_url = str(video_url or "").strip()
+    clean_url = _canonical_video_url(video_url)
     if not clean_url:
         return None
     endpoint = f"https://www.youtube.com/oembed?format=json&url={quote(clean_url, safe='')}"
@@ -966,7 +1057,7 @@ def _oembed_video_preview_entry(video_url: str, *, source_url: str) -> dict | No
         return None
     author = str(payload.get("author_name") or "").strip()
     return {
-        "url": clean_url or source_url,
+        "url": clean_url or _canonical_video_url(source_url),
         "title": title,
         "thumbnail": payload.get("thumbnail_url"),
         "uploader": author,
@@ -1056,7 +1147,7 @@ def _sanitize_preview_entry(info: dict | None, *, fallback_index: int = 0) -> di
     availability = str(info.get("availability") or "").strip().lower()
     if availability in {"private", "subscriber_only", "needs_auth", "premium_only"}:
         return None
-    url = str(info.get("webpage_url") or info.get("url") or "").strip()
+    url = _canonical_video_url(str(info.get("webpage_url") or info.get("url") or "").strip())
     if not url:
         return None
     subs = info.get("subtitles") or {}
@@ -1249,12 +1340,16 @@ async def create_playlist_jobs(req: PlaylistJobRequest) -> dict:
     if info.get("_type") not in ("playlist", "channel"):
         raise HTTPException(status_code=400, detail="URL is not a playlist or channel")
 
-    excluded_urls = {str(url or "").strip() for url in req.excluded_urls if str(url or "").strip()}
+    excluded_urls = {
+        _canonical_video_url(str(url or "").strip())
+        for url in req.excluded_urls
+        if _canonical_video_url(str(url or "").strip())
+    }
     global_subtitles = _normalize_subtitles(req.global_subtitles)
     individual_subtitles = {
-        str(url).strip(): _normalize_subtitles(langs)
+        _canonical_video_url(str(url).strip()): _normalize_subtitles(langs)
         for url, langs in req.individual_subtitles.items()
-        if str(url).strip()
+        if _canonical_video_url(str(url).strip())
     }
 
     queued_job_ids: list[str] = []
@@ -1264,7 +1359,7 @@ async def create_playlist_jobs(req: PlaylistJobRequest) -> dict:
     for entry in info.get("entries") or []:
         if not _is_supported_playlist_entry(entry):
             continue
-        entry_url = str((entry or {}).get("url") or "").strip()
+        entry_url = _canonical_video_url(str((entry or {}).get("url") or "").strip())
         if not entry_url:
             continue
         if entry_url in excluded_urls:
@@ -1297,16 +1392,16 @@ async def create_playlist_jobs(req: PlaylistJobRequest) -> dict:
 @app.post("/api/inquiries")
 async def create_inquiry(req: InquiryRequest) -> dict:
     loop = asyncio.get_event_loop()
-    source_url = str(req.url or "").strip()
+    source_url = _canonical_source_url(req.url)
     existing = await loop.run_in_executor(None, db.inquiry_get_by_source_url, source_url)
     if existing and existing.get("status") in {"queued", "building", "done"}:
         return existing
 
     inquiry_id = f"iq_{uuid4().hex[:8]}"
-    await loop.run_in_executor(None, db.inquiry_insert, inquiry_id, req.url)
-    threading.Thread(target=_run_inquiry_sync, args=(inquiry_id, req.url), daemon=True).start()
+    await loop.run_in_executor(None, db.inquiry_insert, inquiry_id, source_url)
+    threading.Thread(target=_run_inquiry_sync, args=(inquiry_id, source_url), daemon=True).start()
     row = await loop.run_in_executor(None, db.inquiry_get, inquiry_id)
-    return row or {"inquiry_id": inquiry_id, "source_url": req.url}
+    return row or {"inquiry_id": inquiry_id, "source_url": source_url}
 
 
 @app.get("/api/inquiries/{inquiry_id}")
@@ -1692,9 +1787,31 @@ async def preview_by_url(
     loop = asyncio.get_event_loop()
     req_page = max(0, int(page))
     req_limit = max(1, min(int(limit), 50))
+    source_url = _canonical_source_url(url)
 
     def _build() -> dict:
-        cached = db.get_preview_items(url)
+        cached = db.get_preview_items(source_url)
+        if not cached:
+            playlist_id = _playlist_id_from_url(source_url)
+            if playlist_id:
+                alias = db.find_preview_source_by_playlist_id(playlist_id, exclude_source_url=source_url)
+                if alias:
+                    alias_items = db.get_preview_items(alias["source_url"])
+                    if alias_items and _is_updated_within_24h(alias.get("updated_at")):
+                        db.upsert_preview_source(
+                            source_url,
+                            alias.get("source_type") or "playlist",
+                            alias.get("title"),
+                            alias.get("uploader"),
+                            int(alias.get("total_count") or len(alias_items)),
+                        )
+                        for item in alias_items:
+                            alias_url = _canonical_video_url(item.get("url") or "")
+                            if not alias_url:
+                                continue
+                            item["url"] = alias_url
+                            db.upsert_preview_item(source_url, item)
+                        cached = db.get_preview_items(source_url)
         if not cached:
             return {
                 "items": [],

@@ -1707,7 +1707,36 @@
       return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
     function normalizeInquiryUrl(url) {
-      return String(url || '').trim().replace(/\/+$/, '');
+      const raw = String(url || '').trim();
+      if (!raw) return '';
+      const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+      try {
+        const u = new URL(withScheme);
+        const host = (u.hostname || '').toLowerCase().replace(/^www\./, '').replace(/^m\./, '');
+        const listId = u.searchParams.get('list');
+        if ((host === 'youtube.com' || host === 'youtu.be') && listId) {
+          return `https://www.youtube.com/playlist?list=${listId}`;
+        }
+        const qv = u.searchParams.get('v');
+        let vid = qv || '';
+        if (!vid && host === 'youtu.be') {
+          vid = (u.pathname || '').split('/').filter(Boolean)[0] || '';
+        }
+        if (!vid) {
+          const m = (u.pathname || '').match(/(?:^|\/)(?:shorts|embed|v|live)\/([0-9A-Za-z_-]{11})(?:\/|$)/);
+          if (m) vid = m[1];
+        }
+        if ((host === 'youtube.com' || host === 'youtu.be') && /^[0-9A-Za-z_-]{11}$/.test(vid)) {
+          return `https://www.youtube.com/watch?v=${vid}`;
+        }
+        const path = (u.pathname || '/').replace(/\/+$/, '') || '/';
+        if (host === 'youtube.com') return `https://www.youtube.com${path}`;
+        u.pathname = path;
+        u.hash = '';
+        return u.toString();
+      } catch (_) {
+        return raw.replace(/\/+$/, '');
+      }
     }
     function toast(msg, type = 'ok') {
       const c = document.getElementById('toasts'), t = document.createElement('div');
@@ -2100,15 +2129,20 @@
         dlBtn.style.display = 'none';
         return;
       }
+      if (currentInquiryStatus !== 'done' || Number(currentPreviewTotal || 0) <= 0) {
+        dlBtn.style.display = 'none';
+        return;
+      }
       if (currentPlaylistType === 'video') {
         const entry = currentPlaylistEntries[0];
-        if (!entry?.url) {
+        const videoUrl = entry?.url || currentPlaylistUrl;
+        if (!videoUrl) {
           dlBtn.style.display = 'none';
           return;
         }
         dlBtn.style.display = 'inline-flex';
         dlBtn.querySelector('#dl-txt').textContent = 'Download';
-        dlBtn.onclick = () => submitSingleJob(entry.url, getEntrySubtitleSelection(entry), null);
+        dlBtn.onclick = () => submitSingleJob(videoUrl, getEntrySubtitleSelection(entry || { url: videoUrl }), null);
         return;
       }
       if (!currentPlaylistUrl) {
@@ -2121,9 +2155,7 @@
     }
 
     document.getElementById('url-input').addEventListener('input', (e) => {
-      const dlBtn = document.getElementById('dl-btn');
-      if (e.target.value.trim() !== lastFetchedUrl || !lastFetchedUrl) dlBtn.style.display = 'none';
-      else dlBtn.style.display = 'inline-flex';
+      syncDownloadButton();
     });
 
     function renderInfoCard(data) {

@@ -408,6 +408,36 @@ def get_preview_source(source_url: str) -> dict | None:
         return dict(row) if row else None
 
 
+def find_preview_source_by_playlist_id(playlist_id: str, exclude_source_url: str | None = None) -> dict | None:
+    pid = str(playlist_id or "").strip()
+    if not pid:
+        return None
+    with _conn() as c:
+        if exclude_source_url:
+            row = c.execute(
+                """
+                SELECT source_url, source_type, title, uploader, total_count, updated_at
+                FROM preview_sources
+                WHERE instr(source_url, ?) > 0 AND source_url <> ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (f"list={pid}", exclude_source_url),
+            ).fetchone()
+        else:
+            row = c.execute(
+                """
+                SELECT source_url, source_type, title, uploader, total_count, updated_at
+                FROM preview_sources
+                WHERE instr(source_url, ?) > 0
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (f"list={pid}",),
+            ).fetchone()
+        return dict(row) if row else None
+
+
 def get_preview_items(source_url: str) -> list[dict]:
     with _conn() as c:
         rows = c.execute(
