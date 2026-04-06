@@ -26,6 +26,8 @@ from threading import Lock
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+DOWNLOAD_RETRY_DELAYS = [5, 5, 5, 10, 10, 30, 30, 60, 60, 100, 200]
+
 
 # ── Logging helper ─────────────────────────────────────────────────────────────
 def log(emoji: str, msg: str) -> None:
@@ -322,8 +324,6 @@ async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
 
     async with _dl_semaphore:
         log("🚦", f"[{job_short}] Semaphore acquired — starting download")
-        db.queue_update(job.job_id, status="downloading")
-        job.push({"phase": "fetching", "message": "Fetching metadata…"})
 
         _thumb_seeded = [False]
         _cancelled    = [False]
@@ -428,8 +428,27 @@ async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
             log("✅", f"[{job_short}] _run() completed successfully")
             return None
 
-        error = await loop.run_in_executor(None, _run)
-        log("🏁", f"[{job_short}] run_in_executor returned — error={error!r}")
+        error = None
+        for attempt_index in range(len(DOWNLOAD_RETRY_DELAYS) + 1):
+            db.queue_update(job.job_id, status="downloading")
+            job.push({"phase": "fetching", "message": "Fetching metadata…"})
+            error = await loop.run_in_executor(None, _run)
+            log("🏁", f"[{job_short}] run_in_executor returned — error={error!r} attempt={attempt_index + 1}")
+            if not error or error == "__cancelled__":
+                break
+            if attempt_index >= len(DOWNLOAD_RETRY_DELAYS):
+                break
+            delay = DOWNLOAD_RETRY_DELAYS[attempt_index]
+            retry_msg = f"Retrying after {delay}s due to download error"
+            log("🔁", f"[{job_short}] {retry_msg}: {error}")
+            job.push({"phase": "queued", "message": retry_msg})
+            db.queue_update(job.job_id, status="queued", error_msg=retry_msg)
+            try:
+                await asyncio.wait_for(asyncio.to_thread(job.cancel_event.wait), timeout=delay)
+                error = "__cancelled__"
+                break
+            except asyncio.TimeoutError:
+                continue
 
     # ── Post-download cleanup ──────────────────────────────────────────────────
     if error == "__cancelled__":
@@ -1542,10 +1561,10 @@ async def list_media(
     order:        str = "desc",
     limit:        int = 60,
     offset:       int = 0,
-) -> list[dict]:
+) -> dict:
     loop     = asyncio.get_event_loop()
     tag_list = [t.strip() for t in tags.split(",")] if tags else None
-    items    = await loop.run_in_executor(
+    items, total = await loop.run_in_executor(
         None, db.query_media,
         mode, channel_id, min_views, max_views, min_likes,
         min_duration, max_duration, tag_list, sub_lang,
@@ -1560,7 +1579,7 @@ async def list_media(
         else:
             rel = item.get("file_name") or ""
         item["download_url"] = prefix + "/".join(p for p in rel.split("/") if p)
-    return items
+    return {"items": items, "total": total}
 
 
 @app.get("/api/channels")

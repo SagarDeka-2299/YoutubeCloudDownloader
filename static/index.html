@@ -1440,7 +1440,10 @@
   <!-- ── Library card ───────────────────────────────────────────────────────── -->
   <div class="card">
     <div class="sec-hdr">
-      <span class="card-title">📚 Library</span>
+      <div style="display:flex; align-items:center; gap:0.5rem;">
+        <span class="card-title">📚 Library</span>
+        <span id="library-total-count" style="font-size:.76rem;color:var(--m)"></span>
+      </div>
       <div class="lib-tabs">
         <button class="lt on" id="lt-audio" onclick="switchLib('audio')">🎵 Audio</button>
         <button class="lt" id="lt-video" onclick="switchLib('video')">🎬 Video</button>
@@ -1518,7 +1521,11 @@
         <div>No files yet</div>
       </div>
     </div>
-    <button id="load-more" onclick="loadMore()">Load more</button>
+    <div class="pager" id="library-pager" style="display:none; margin-top:0.85rem;">
+      <button class="pager-btn" id="lib-prev" onclick="setLibraryPageDelta(-1)">‹</button>
+      <span class="pager-info" id="library-pager-info"></span>
+      <button class="pager-btn" id="lib-next" onclick="setLibraryPageDelta(1)">›</button>
+    </div>
   </div>
 
   <div id="toasts"></div>
@@ -1623,7 +1630,7 @@
   <script>
     // ── State ──────────────────────────────────────────────────────────────────
     let dlMode = 'audio', quality = 'best', targetPath = '';
-    let libMode = 'audio', libOrder = 'desc', libOffset = 0;
+    let libMode = 'audio', libOrder = 'desc', libPage = 0, libTotal = 0;
     const LIB_LIMIT = 30, QUEUE_PG = 5;
     let queuePage = 0, queueTotal = 0;
     let queueWs = null;
@@ -2160,7 +2167,7 @@
              <div class="i-ph">📺</div>
           </div>
           <div class="i-body" style="padding-right:2rem;">
-             <div class="i-title">${esc(entry.title || `Item ${index + 1}`)}</div>
+             <div class="i-title"><a href="${esc(entry.url || '#')}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none;">${esc(entry.title || `Item ${index + 1}`)}</a></div>
              <div class="i-meta" id="pl-meta-${index}">Fetching info <span class="spin" style="width:10px;height:10px;border-width:2px;vertical-align:middle;margin-left:0.2rem;"></span></div>
              <div id="pl-subs-${index}" style="margin-top:0.4rem; display:none; gap:0.4rem; flex-wrap:wrap;"></div>
           </div>
@@ -3213,24 +3220,46 @@
       if (tags) p.set('tags', tags);
       return p;
     }
+    function renderLibraryPager() {
+      const pager = document.getElementById('library-pager');
+      const totalPages = Math.max(1, Math.ceil(libTotal / LIB_LIMIT));
+      if (libTotal <= LIB_LIMIT) {
+        pager.style.display = 'none';
+        return;
+      }
+      pager.style.display = 'flex';
+      document.getElementById('library-pager-info').textContent = `Page ${libPage + 1} / ${totalPages}`;
+      document.getElementById('lib-prev').disabled = libPage === 0;
+      document.getElementById('lib-next').disabled = libPage >= totalPages - 1;
+    }
+    function setLibraryPage(nextPage) {
+      const totalPages = Math.max(1, Math.ceil(libTotal / LIB_LIMIT));
+      libPage = Math.min(Math.max(0, nextPage), totalPages - 1);
+      loadMedia(false);
+    }
+    function setLibraryPageDelta(delta) {
+      setLibraryPage(libPage + delta);
+    }
     async function loadMedia(reset = false) {
-      if (reset) { libOffset = 0; }
+      if (reset) { libPage = 0; }
       try {
-        const res = await fetch('/api/media?' + buildParams(libOffset));
-        const items = await res.json();
+        const res = await fetch('/api/media?' + buildParams(libPage * LIB_LIMIT));
+        const data = await res.json();
+        const items = data.items || [];
+        libTotal = Number(data.total || 0);
         const list = document.getElementById('media-list');
-        if (reset) list.innerHTML = '';
-        if (!items.length && reset) {
+        document.getElementById('library-total-count').textContent =
+          libTotal > 0 ? `${libTotal} download${libTotal !== 1 ? 's' : ''}` : '';
+        list.innerHTML = '';
+        if (!items.length) {
           list.innerHTML = `<div class="empty"><div class="empty-icon">${libMode === 'audio' ? '🎵' : '🎬'}</div><div>No ${libMode} files yet</div></div>`;
-          document.getElementById('load-more').classList.remove('on');
+          renderLibraryPager();
           return;
         }
         items.forEach(item => list.appendChild(makeMediaCard(item)));
-        libOffset += items.length;
-        document.getElementById('load-more').classList.toggle('on', items.length === LIB_LIMIT);
+        renderLibraryPager();
       } catch (_) { }
     }
-    async function loadMore() { await loadMedia(false); }
 
     function makeMediaCard(item) {
       const div = document.createElement('div');
@@ -3247,10 +3276,11 @@
         ? `<img class="med-thumb" src="${esc(item.thumbnail)}" alt="" loading="lazy"/>`
         : `<div class="med-thumb-ph">${libMode === 'audio' ? '🎵' : '🎬'}</div>`;
       const dlUrl = item.download_url || '#';
+      const ytUrl = item.youtube_url || '#';
       div.innerHTML = `
     ${thumb}
     <div class="med-body">
-      <div class="med-title" title="${esc(item.title || '')}">${esc(item.title || 'Untitled')}</div>
+      <div class="med-title" title="${esc(item.title || '')}"><a href="${esc(ytUrl)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none;">${esc(item.title || 'Untitled')}</a></div>
       ${item.channel_name ? `<div class="med-channel"><a href="${esc(item.channel_url || '#')}" target="_blank" style="color:inherit;text-decoration:none">📡 ${esc(item.channel_name)}</a></div>` : ''}
       <div class="med-meta">${meta.join('<span style="opacity:.3"> · </span>')}</div>
       ${tags ? `<div class="med-tags">${tags}</div>` : ''}

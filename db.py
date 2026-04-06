@@ -227,7 +227,7 @@ def query_media(
     order: str = "desc",
     limit: int = 60,
     offset: int = 0,
-) -> list[dict]:
+) -> tuple[list[dict], int]:
     _allowed = {"download_date", "release_date", "title", "channel_name",
                 "view_count", "like_count", "duration", "file_size"}
     sb = sort_by if sort_by in _allowed else "download_date"
@@ -252,11 +252,13 @@ def query_media(
         cond.append("EXISTS (SELECT 1 FROM transcripts t WHERE t.media_id = media.id AND t.language = ?)")
         params.append(sub_lang.strip())
 
+    where_sql = f"WHERE {' AND '.join(cond)}"
     fetch = (limit * 4) if tags else limit
-    sql = f"SELECT * FROM media WHERE {' AND '.join(cond)} ORDER BY {sb} {od} LIMIT ? OFFSET ?"
+    sql = f"SELECT * FROM media {where_sql} ORDER BY {sb} {od} LIMIT ? OFFSET ?"
     params += [fetch, offset]
 
     with _conn() as c:
+        total = c.execute(f"SELECT COUNT(*) FROM media {where_sql}", params[:-2]).fetchone()[0]
         rows = [dict(r) for r in c.execute(sql, params)]
 
     result: list[dict] = []
@@ -271,7 +273,17 @@ def query_media(
         if len(result) >= limit:
             break
 
-    return result
+    if tags:
+        total = 0
+        count_sql = f"SELECT tags FROM media {where_sql}"
+        with _conn() as c:
+            for row in c.execute(count_sql, params[:-2]):
+                row_tags = json.loads((dict(row).get("tags")) or "[]")
+                row_tag_set = {t.lower() for t in row_tags}
+                if any(t.lower() in row_tag_set for t in tags):
+                    total += 1
+
+    return result, total
 
 
 def get_channels() -> list[dict]:
