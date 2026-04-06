@@ -286,6 +286,67 @@ def query_media(
     return result, total
 
 
+def query_media_stats(
+    mode: str = "audio",
+    channel_id: int | None = None,
+    min_views: int | None = None,
+    max_views: int | None = None,
+    min_likes: int | None = None,
+    min_duration: int | None = None,
+    max_duration: int | None = None,
+    tags: list[str] | None = None,
+    sub_lang: str | None = None,
+) -> dict[str, int]:
+    cond: list[str] = ["mode=?"]
+    params: list[Any] = [mode]
+
+    if channel_id is not None:
+        cond.append("channel_id=?"); params.append(channel_id)
+    if min_views is not None:
+        cond.append("COALESCE(view_count,0)>=?"); params.append(min_views)
+    if max_views is not None:
+        cond.append("COALESCE(view_count,0)<=?"); params.append(max_views)
+    if min_likes is not None:
+        cond.append("COALESCE(like_count,0)>=?"); params.append(min_likes)
+    if min_duration is not None:
+        cond.append("COALESCE(duration,0)>=?"); params.append(min_duration)
+    if max_duration is not None:
+        cond.append("COALESCE(duration,0)<=?"); params.append(max_duration)
+    if sub_lang is not None and sub_lang.strip():
+        cond.append("EXISTS (SELECT 1 FROM transcripts t WHERE t.media_id = media.id AND t.language = ?)")
+        params.append(sub_lang.strip())
+
+    where_sql = f"WHERE {' AND '.join(cond)}"
+    with _conn() as c:
+        rows = [dict(r) for r in c.execute(
+            f"SELECT file_size, duration, tags FROM media {where_sql}",
+            params,
+        )]
+
+    def _tag_match(row_tags: list[str]) -> bool:
+        if not tags:
+            return True
+        row_set = {str(t).lower() for t in row_tags}
+        return any(str(t).lower() in row_set for t in tags)
+
+    total_count = 0
+    total_bytes = 0
+    total_duration = 0
+    for row in rows:
+        row_tags = json.loads(row.get("tags") or "[]")
+        if not _tag_match(row_tags):
+            continue
+        total_count += 1
+        total_bytes += int(row.get("file_size") or 0)
+        total_duration += int(row.get("duration") or 0)
+
+    return {
+        "total_count": total_count,
+        "total_bytes": total_bytes,
+        "total_duration_seconds": total_duration,
+    }
+
+
 def get_channels() -> list[dict]:
     with _conn() as c:
         return [dict(r) for r in c.execute(
@@ -622,6 +683,14 @@ def queue_list(page: int = 0, limit: int = 10) -> tuple[list[dict], int]:
             (limit, offset),
         ).fetchall()
         return [dict(r) for r in rows], total
+
+
+def queue_active_count() -> int:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT COUNT(*) FROM queue WHERE status IN ('queued','downloading','converting','saving')"
+        ).fetchone()
+        return int(row[0] if row else 0)
 
 
 def queue_delete(job_id: str) -> None:

@@ -1314,8 +1314,8 @@
   <!-- ── Download card ─────────────────────────────────────────────────────── -->
   <div class="card">
     <div class="tabs">
-      <button class="tab on" id="tab-audio" onclick="setMode('audio')">🎵 Audio (MP3)</button>
-      <button class="tab" id="tab-video" onclick="setMode('video')">🎬 Video (MP4)</button>
+      <button class="tab on" id="tab-audio">🎬+🎵 Download (MP4 + MP3)</button>
+      <button class="tab" id="tab-video" style="display:none" aria-hidden="true">🎬 Video (MP4)</button>
     </div>
 
     <div class="url-row">
@@ -1337,8 +1337,8 @@
       <span class="folder-edit">✎ Change</span>
     </div>
 
-    <!-- Quality (video only) -->
-    <div class="q-row" id="q-row">
+    <!-- Quality -->
+    <div class="q-row" id="q-row" style="display:none">
       <span class="q-label">Quality:</span>
       <button class="q-btn on" data-q="best" onclick="setQ(this)">Best</button>
       <button class="q-btn" data-q="1080" onclick="setQ(this)">1080p</button>
@@ -1746,10 +1746,10 @@
 
     // ── Mode / Quality ─────────────────────────────────────────────────────────
     function setMode(m) {
-      dlMode = m;
-      document.getElementById('tab-audio').classList.toggle('on', m === 'audio');
-      document.getElementById('tab-video').classList.toggle('on', m === 'video');
-      document.getElementById('q-row').classList.toggle('on', m === 'video');
+      dlMode = 'audio';
+      document.getElementById('tab-audio').classList.add('on');
+      document.getElementById('tab-video').classList.remove('on');
+      document.getElementById('q-row').classList.remove('on');
       // Reset folder path for new mode
       targetPath = '';
       document.getElementById('folder-label').textContent = 'Root';
@@ -2458,7 +2458,14 @@
             const res = await fetch('/api/jobs', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ url, mode: dlMode, quality, target_path: targetPath, subtitles }),
+              body: JSON.stringify({
+                url,
+                mode: 'audio',
+                quality,
+                target_path: targetPath,
+                subtitles,
+                inquiry_id: currentInquiryId || null,
+              }),
             });
             const data = await res.json().catch(()=>({}));
             
@@ -2520,12 +2527,13 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               playlist_url: currentPlaylistUrl,
-              mode: dlMode,
+              mode: 'audio',
               quality,
               target_path: targetPath,
               excluded_urls: Array.from(excludedPlaylistUrls),
               global_subtitles: appliedGlobalSubtitleSelection,
               individual_subtitles,
+              inquiry_id: currentInquiryId || null,
             })
           });
           const data = await res.json().catch(() => ({}));
@@ -3335,9 +3343,16 @@
         const data = await res.json();
         const items = data.items || [];
         libTotal = Number(data.total || 0);
+        const stats = data.stats || {};
+        const totalBytes = Number(stats.total_bytes || 0);
+        const totalHours = Number(stats.total_duration_seconds || 0) / 3600;
+        const totalGb = totalBytes / (1024 ** 3);
         const list = document.getElementById('media-list');
-        document.getElementById('library-total-count').textContent =
-          libTotal > 0 ? `${libTotal} download${libTotal !== 1 ? 's' : ''}` : '';
+        const parts = [];
+        if (libTotal > 0) parts.push(`${libTotal} download${libTotal !== 1 ? 's' : ''}`);
+        if (totalGb > 0) parts.push(`${totalGb.toFixed(2)} GB`);
+        if (totalHours > 0) parts.push(`${totalHours.toFixed(1)} h`);
+        document.getElementById('library-total-count').textContent = parts.join(' · ');
         list.innerHTML = '';
         if (!items.length) {
           list.innerHTML = `<div class="empty"><div class="empty-icon">${libMode === 'audio' ? '🎵' : '🎬'}</div><div>No ${libMode} files yet</div></div>`;

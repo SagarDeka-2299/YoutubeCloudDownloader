@@ -30,7 +30,8 @@ from pydantic import BaseModel
 from urllib.parse import parse_qs, quote, urlparse, urlunparse
 from urllib.request import Request as UrlRequest, urlopen
 
-DOWNLOAD_RETRY_DELAYS = [5, 10, 30, 60, 100, 500, 1000, 3600]
+INQUIRY_RETRY_DELAY_SECONDS = 60
+INQUIRY_RETRY_MAX_TRIALS = 5
 
 
 # ── Logging helper ─────────────────────────────────────────────────────────────
@@ -80,7 +81,18 @@ _playlist_preview_lock = Lock()
 
 # ── Job registry ───────────────────────────────────────────────────────────────
 class DownloadJob:
-    def __init__(self, job_id: str) -> None:
+    def __init__(
+        self,
+        job_id: str,
+        *,
+        source_url: str = "",
+        mode: str = "audio",
+        quality: str = "best",
+        target_path: str = "",
+        subtitles: list[str] | None = None,
+        inquiry_id: str | None = None,
+        retry_attempt: int = 1,
+    ) -> None:
         self.job_id        = job_id
         self.messages:  list[dict]          = []
         self.done                           = False
@@ -88,6 +100,13 @@ class DownloadJob:
         self.cancel_event                   = threading.Event()
         self._current_file: str             = ""
         self._last_db_write: float          = 0.0
+        self.source_url = source_url
+        self.mode = mode
+        self.quality = quality
+        self.target_path = target_path
+        self.subtitles = subtitles or []
+        self.inquiry_id = inquiry_id
+        self.retry_attempt = retry_attempt
 
     def should_update_db(self) -> bool:
         now = time.monotonic()
@@ -122,6 +141,9 @@ class DownloadJob:
 
 
 _jobs: dict[str, DownloadJob] = {}
+_inquiry_retry_lock = Lock()
+_inquiry_retry_batches: dict[str, dict[str, dict[str, Any]]] = {}
+_inquiry_retry_task: asyncio.Task | None = None
 
 
 # ── yt-dlp post-processor: saves to DB after ffmpeg is done ───────────────────
@@ -294,7 +316,9 @@ def _build_opts(mode: str, quality: str, output_dir: Path, subtitles: list[str] 
     if mode == "audio":
         return {
             **base,
-            "format": "bestaudio/best",
+            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
+            "merge_output_format": "mp4",
+            "keepvideo": True,
             "postprocessors": [{"key": "FFmpegExtractAudio",
                                 "preferredcodec": "mp3", "preferredquality": "192"}],
         }
@@ -309,6 +333,75 @@ def _build_opts(mode: str, quality: str, output_dir: Path, subtitles: list[str] 
         )
     )
     return {**base, "format": fmt, "merge_output_format": "mp4"}
+
+
+def _queue_retry_item(job: DownloadJob, error_msg: str) -> None:
+    if not job.inquiry_id:
+        return
+    next_attempt = job.retry_attempt + 1
+    if next_attempt > INQUIRY_RETRY_MAX_TRIALS:
+        return
+    key = _canonical_video_url(job.source_url) or job.source_url
+    if not key:
+        return
+    with _inquiry_retry_lock:
+        batch = _inquiry_retry_batches.setdefault(job.inquiry_id, {})
+        batch[key] = {
+            "source_url": key,
+            "mode": job.mode,
+            "quality": job.quality,
+            "target_path": job.target_path,
+            "subtitles": list(job.subtitles or []),
+            "inquiry_id": job.inquiry_id,
+            "retry_attempt": next_attempt,
+            "next_retry_at": time.time() + INQUIRY_RETRY_DELAY_SECONDS,
+            "last_error": error_msg,
+        }
+
+
+async def _process_inquiry_retries() -> None:
+    while True:
+        try:
+            await asyncio.sleep(2.0)
+            if _jobs:
+                continue
+            loop = asyncio.get_event_loop()
+            active_count = await loop.run_in_executor(None, db.queue_active_count)
+            if active_count > 0:
+                continue
+
+            now = time.time()
+            due_items: list[dict[str, Any]] = []
+            with _inquiry_retry_lock:
+                empty_inquiries: list[str] = []
+                for inquiry_id, batch in _inquiry_retry_batches.items():
+                    for key, item in list(batch.items()):
+                        if float(item.get("next_retry_at") or 0) <= now:
+                            due_items.append(item)
+                            batch.pop(key, None)
+                    if not batch:
+                        empty_inquiries.append(inquiry_id)
+                for inquiry_id in empty_inquiries:
+                    _inquiry_retry_batches.pop(inquiry_id, None)
+
+            for item in due_items:
+                try:
+                    await _enqueue_job(
+                        loop=loop,
+                        url=item["source_url"],
+                        mode=item.get("mode") or "audio",
+                        quality=item.get("quality") or "best",
+                        target_path=item.get("target_path") or "",
+                        subtitles=item.get("subtitles") or [],
+                        inquiry_id=item.get("inquiry_id"),
+                        retry_attempt=int(item.get("retry_attempt") or 1),
+                    )
+                except Exception as exc:
+                    log("❌", f"Retry enqueue failed for inquiry {item.get('inquiry_id')}: {exc}")
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            log("❌", f"Inquiry retry loop error: {exc}")
 
 
 # ── Download worker ────────────────────────────────────────────────────────────
@@ -399,11 +492,8 @@ async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
 
         opts["progress_hooks"] = [_progress_hook]
 
-        last_rate_limited = False
-
         def _run() -> str | None:
             """Returns None on success, '__cancelled__' on cancel, or error string."""
-            nonlocal last_rate_limited
             log("▶️", f"[{job_short}] _run() entering yt_dlp.YoutubeDL")
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
@@ -426,7 +516,6 @@ async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
                 if "__ytgrab_cancel__" in msg or _cancelled[0] or job.cancel_event.is_set():
                     log("🚫", f"[{job_short}] Cancelled by user")
                     return "__cancelled__"
-                last_rate_limited = _is_rate_limited_exception(exc, msg)
                 log("❌", f"[{job_short}] Exception in _run: {exc}")
                 import traceback
                 traceback.print_exc()
@@ -438,30 +527,10 @@ async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
             log("✅", f"[{job_short}] _run() completed successfully")
             return None
 
-        error = None
-        for attempt_index in range(len(DOWNLOAD_RETRY_DELAYS) + 1):
-            db.queue_update(job.job_id, status="downloading")
-            job.push({"phase": "fetching", "message": "Fetching metadata…"})
-            error = await loop.run_in_executor(_download_executor, _run)
-            log("🏁", f"[{job_short}] run_in_executor returned — error={error!r} attempt={attempt_index + 1}")
-            if not error or error == "__cancelled__":
-                break
-            if last_rate_limited:
-                log("⏸️", f"[{job_short}] YouTube rate limit detected. Stopping retries for this item.")
-                break
-            if attempt_index >= len(DOWNLOAD_RETRY_DELAYS):
-                break
-            delay = DOWNLOAD_RETRY_DELAYS[attempt_index]
-            retry_msg = f"Retrying after {delay}s due to download error"
-            log("🔁", f"[{job_short}] {retry_msg}: {error}")
-            job.push({"phase": "queued", "message": retry_msg})
-            db.queue_update(job.job_id, status="queued", error_msg=retry_msg)
-            try:
-                await asyncio.wait_for(asyncio.to_thread(job.cancel_event.wait), timeout=delay)
-                error = "__cancelled__"
-                break
-            except asyncio.TimeoutError:
-                continue
+        db.queue_update(job.job_id, status="downloading")
+        job.push({"phase": "fetching", "message": "Fetching metadata…"})
+        error = await loop.run_in_executor(_download_executor, _run)
+        log("🏁", f"[{job_short}] run_in_executor returned — error={error!r} attempt={job.retry_attempt}")
 
     # ── Post-download cleanup ──────────────────────────────────────────────────
     if error == "__cancelled__":
@@ -483,10 +552,21 @@ async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
 
     elif error:
         log("❌", f"[{job_short}] Job failed: {error}")
-        job.push({"phase": "error", "message": error})
-        db.queue_update(job.job_id, status="error", error_msg=error)
-        # Keep in DB so user can dismiss; remove from memory
-        _jobs.pop(job.job_id, None)
+        if job.inquiry_id and job.retry_attempt < INQUIRY_RETRY_MAX_TRIALS:
+            retry_msg = (
+                f"Retry queued for inquiry after {INQUIRY_RETRY_DELAY_SECONDS}s "
+                f"when queue is empty ({job.retry_attempt}/{INQUIRY_RETRY_MAX_TRIALS})"
+            )
+            log("🔁", f"[{job_short}] {retry_msg}")
+            _queue_retry_item(job, error)
+            job.push({"phase": "queued", "message": retry_msg})
+            db.queue_update(job.job_id, status="queued", error_msg=retry_msg)
+            await loop.run_in_executor(None, db.queue_delete, job.job_id)
+            _jobs.pop(job.job_id, None)
+        else:
+            job.push({"phase": "error", "message": error})
+            db.queue_update(job.job_id, status="error", error_msg=error)
+            _jobs.pop(job.job_id, None)
 
     else:
         log("🎉", f"[{job_short}] Job completed successfully!")
@@ -500,7 +580,7 @@ async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
 # ── App lifecycle ──────────────────────────────────────────────────────────────
 @app.on_event("startup")
 async def _startup() -> None:
-    global _dl_semaphore, _download_executor, _default_executor
+    global _dl_semaphore, _download_executor, _default_executor, _inquiry_retry_task
     _dl_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
     loop = asyncio.get_event_loop()
     # Keep request/DB operations responsive even when downloads are active.
@@ -519,12 +599,16 @@ async def _startup() -> None:
             log("⚠️", f"Orphaned queue row {row['job_id'][:8]} status={row['status']} → error")
             db.queue_update(row["job_id"], status="error",
                             error_msg="Server restarted — download was interrupted")
+    _inquiry_retry_task = asyncio.create_task(_process_inquiry_retries())
     log("✅", "Startup complete")
 
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
-    global _download_executor, _default_executor
+    global _download_executor, _default_executor, _inquiry_retry_task
+    if _inquiry_retry_task:
+        _inquiry_retry_task.cancel()
+        _inquiry_retry_task = None
     if _download_executor:
         _download_executor.shutdown(wait=False, cancel_futures=False)
         _download_executor = None
@@ -647,6 +731,7 @@ class JobRequest(BaseModel):
     quality:     str                       = "best"
     target_path: str                       = ""
     subtitles:   list[str]                 = []
+    inquiry_id:  str | None                = None
 
 
 class PlaylistJobRequest(BaseModel):
@@ -657,6 +742,7 @@ class PlaylistJobRequest(BaseModel):
     excluded_urls:        list[str]                 = []
     global_subtitles:     list[str]                 = []
     individual_subtitles: dict[str, list[str]]      = {}
+    inquiry_id:           str | None                = None
 
 
 class InquiryRequest(BaseModel):
@@ -1287,6 +1373,8 @@ async def _enqueue_job(
     quality: str,
     target_path: str,
     subtitles: list[str] | None,
+    inquiry_id: str | None = None,
+    retry_attempt: int = 1,
 ) -> tuple[str | None, dict | None]:
     y_id = extract_youtube_id(url)
     if y_id:
@@ -1296,15 +1384,26 @@ async def _enqueue_job(
             return None, existing
 
     job_id = str(uuid4())
-    job = DownloadJob(job_id)
+    normalized_mode = "audio"
+    normalized_subs = _normalize_subtitles(subtitles)
+    job = DownloadJob(
+        job_id,
+        source_url=url,
+        mode=normalized_mode,
+        quality=quality,
+        target_path=target_path,
+        subtitles=normalized_subs,
+        inquiry_id=inquiry_id,
+        retry_attempt=retry_attempt,
+    )
     _jobs[job_id] = job
 
     await loop.run_in_executor(
-        None, db.queue_insert, job_id, url, mode, quality, target_path
+        None, db.queue_insert, job_id, url, normalized_mode, quality, target_path
     )
     log("✅", f"Job {job_id[:8]} inserted into queue")
     asyncio.create_task(
-        _run_job(job, url, mode, quality, target_path, _normalize_subtitles(subtitles))
+        _run_job(job, url, normalized_mode, quality, target_path, normalized_subs)
     )
     return job_id, None
 
@@ -1312,14 +1411,15 @@ async def _enqueue_job(
 @app.post("/api/jobs")
 async def create_job(req: JobRequest) -> dict:
     loop = asyncio.get_event_loop()
-    log("📥", f"POST /api/jobs — url={req.url[:60]!r} mode={req.mode}")
+    log("📥", f"POST /api/jobs — url={req.url[:60]!r} mode=audio")
     job_id, existing = await _enqueue_job(
         loop=loop,
         url=req.url,
-        mode=req.mode,
+        mode="audio",
         quality=req.quality,
         target_path=req.target_path,
         subtitles=req.subtitles,
+        inquiry_id=req.inquiry_id,
     )
     if existing:
         raise HTTPException(status_code=409, detail={"duplicate": True, "media": existing})
@@ -1329,7 +1429,7 @@ async def create_job(req: JobRequest) -> dict:
 @app.post("/api/playlist_jobs")
 async def create_playlist_jobs(req: PlaylistJobRequest) -> dict:
     loop = asyncio.get_event_loop()
-    log("📥", f"POST /api/playlist_jobs — url={req.playlist_url[:60]!r} mode={req.mode}")
+    log("📥", f"POST /api/playlist_jobs — url={req.playlist_url[:60]!r} mode=audio")
 
     try:
         info = await loop.run_in_executor(None, _fetch_info, req.playlist_url)
@@ -1370,10 +1470,11 @@ async def create_playlist_jobs(req: PlaylistJobRequest) -> dict:
         job_id, existing = await _enqueue_job(
             loop=loop,
             url=entry_url,
-            mode=req.mode,
+            mode="audio",
             quality=req.quality,
             target_path=req.target_path,
             subtitles=subtitles,
+            inquiry_id=req.inquiry_id,
         )
         if existing:
             skipped_duplicates += 1
@@ -1861,6 +1962,11 @@ async def list_media(
         min_duration, max_duration, tag_list, sub_lang,
         sort_by, order, limit, offset,
     )
+    stats = await loop.run_in_executor(
+        None, db.query_media_stats,
+        mode, channel_id, min_views, max_views, min_likes,
+        min_duration, max_duration, tag_list, sub_lang,
+    )
     base_str = str(AUDIO_DIR.resolve()) if mode == "audio" else str(VIDEO_DIR.resolve())
     prefix   = "/files/audio/" if mode == "audio" else "/files/video/"
     for item in items:
@@ -1870,7 +1976,7 @@ async def list_media(
         else:
             rel = item.get("file_name") or ""
         item["download_url"] = prefix + "/".join(p for p in rel.split("/") if p)
-    return {"items": items, "total": total}
+    return {"items": items, "total": total, "stats": stats}
 
 
 @app.get("/api/channels")
