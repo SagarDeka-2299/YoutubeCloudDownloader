@@ -1475,6 +1475,7 @@
     // ── State ──────────────────────────────────────────────────────────────────
     let dlMode = 'audio', quality = 'best';
     let libMode = 'audio', libOrder = 'desc', libPage = 0, libTotal = 0;
+    let currentLibraryItems = [];
     const LIB_LIMIT = 5, QUEUE_PG = 5;
     let queuePage = 0, queueTotal = 0;
     let queueWs = null;
@@ -2979,10 +2980,24 @@
       libMode = m;
       document.getElementById('lt-audio').classList.toggle('on', m === 'audio');
       document.getElementById('lt-video').classList.toggle('on', m === 'video');
-      loadSubLangsFilter();
-      loadMedia(true);
+      refreshVisibleMediaDownloadTargets();
     }
     function applyFilters() { loadMedia(true); }
+
+    function refreshVisibleMediaDownloadTargets() {
+      currentLibraryItems.forEach(item => {
+        const link = document.getElementById(`mc-save-${item.id}`);
+        if (!link) return;
+        const nextUrl = libMode === 'video'
+          ? (item.video_download_url || item.download_url || item.audio_download_url || '#')
+          : (item.audio_download_url || item.download_url || item.video_download_url || '#');
+        const nextName = libMode === 'video'
+          ? (item.video_file_name || item.file_name || '')
+          : (item.audio_file_name || item.file_name || '');
+        link.href = nextUrl;
+        link.setAttribute('download', nextName);
+      });
+    }
     
     async function downloadAllFiltered() {
        const confirm = await showConfirm(
@@ -3089,6 +3104,7 @@
         const data = await res.json();
         const summary = summaryRes.ok ? await summaryRes.json() : {};
         const items = data.items || [];
+        currentLibraryItems = items;
         libTotal = Number(data.total || 0);
         const stats = data.stats || {};
         const filteredBytes = Number(stats.total_bytes || 0);
@@ -3115,6 +3131,7 @@
         document.getElementById('library-total-count').textContent = parts.join(' · ');
         list.innerHTML = '';
         if (!items.length) {
+          currentLibraryItems = [];
           list.innerHTML = `<div class="empty"><div class="empty-icon">📂</div><div>No files yet</div></div>`;
           renderLibraryPager();
           return;
@@ -3153,7 +3170,7 @@
       <div class="med-meta">${meta.join('<span style="opacity:.3"> · </span>')}</div>
       ${tags ? `<div class="med-tags">${tags}</div>` : ''}
       <div class="med-actions">
-        <a href="${esc(dlUrl)}" download="${esc(dlName)}">
+        <a id="mc-save-${item.id}" href="${esc(dlUrl)}" download="${esc(dlName)}">
           <button class="btn-xs btn-ghost">⬇ Save</button>
         </a>
         <button class="btn-xs btn-ghost" onclick="readTranscript(${item.id})">📝 Transcript</button>
