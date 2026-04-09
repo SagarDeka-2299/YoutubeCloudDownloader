@@ -7,3 +7,6 @@ __pycache__
 .git
 .gitignore
 README.md
+cookies.txt
+.env
+scripts/

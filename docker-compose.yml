@@ -2,7 +2,7 @@ services:
   ytgrab:
     build: .
     ports:
-      - "${HOST_PORT:-8000}:8000"
+      - "${HOST_PORT:-8000}:${PORT:-8000}"
     volumes:
       - ${DOWNLOADS_BASE:-.}/data:${DATA_DIR:-/app/data}
       - ${DOWNLOADS_BASE:-.}/downloads/audio:${AUDIO_DIR:-/app/audio}
@@ -14,6 +14,7 @@ services:
       AUDIO_DIR:      ${AUDIO_DIR:-/app/audio}
       VIDEO_DIR:      ${VIDEO_DIR:-/app/video}
       ZIP_DIR:        ${ZIP_DIR:-/app/zips}
+      PORT:           ${PORT:-8000}
       MAX_CONCURRENT: "${MAX_CONCURRENT:-3}"
       COOKIES_FILE:   ${COOKIES_FILE:-/app/cookies.txt}
     restart: unless-stopped
