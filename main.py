@@ -683,6 +683,62 @@ def _build_opts(mode: str, quality: str, output_dir: Path, subtitles: list[str] 
     return {**base, "format": fmt, "merge_output_format": "mp4"}
 
 
+def _looks_like_cookie_backed_youtube_challenge(error_msg: str) -> bool:
+    msg = (error_msg or "").lower()
+    return any(token in msg for token in (
+        "requested format is not available",
+        "only images are available",
+        "signature solving failed",
+        "n challenge solving failed",
+    ))
+
+
+def _build_public_fallback_opts(
+    mode: str,
+    quality: str,
+    output_dir: Path,
+    subtitles: list[str] | None = None,
+) -> dict:
+    """
+    Public-video fallback when cookie-backed extraction gets challenged.
+    Deliberately omit cookiefile and custom player_client forcing; current
+    YouTube behavior can return unusable image-only formats on the cookie/web
+    path, while the anonymous default extractor path still yields media.
+    """
+    base: dict = {
+        "quiet": False,
+        "no_warnings": False,
+        "ignoreerrors": False,
+        "outtmpl": str(output_dir / "%(title)s.%(ext)s"),
+        "noprogress": True,
+    }
+    if _FFMPEG_LOCATION:
+        base["ffmpeg_location"] = _FFMPEG_LOCATION
+    if subtitles:
+        base["writesubtitles"] = True
+        base["writeautomaticsub"] = True
+        base["subtitleslangs"] = subtitles
+        base["subtitlesformat"] = "vtt/best"
+    if mode == "audio":
+        return {
+            **base,
+            "format": "bestvideo+bestaudio/best",
+            "merge_output_format": "mp4",
+            "keepvideo": True,
+            "postprocessors": [{"key": "FFmpegExtractAudio",
+                                "preferredcodec": "mp3", "preferredquality": "192"}],
+        }
+    fmt = (
+        "bestvideo+bestaudio/best"
+        if quality == "best"
+        else (
+            f"bestvideo[height<={quality}]+bestaudio/"
+            f"best[height<={quality}]/best"
+        )
+    )
+    return {**base, "format": fmt, "merge_output_format": "mp4"}
+
+
 def _queue_retry_item(job: DownloadJob, error_msg: str) -> None:
     next_attempt = job.retry_attempt + 1
     if next_attempt > INQUIRY_RETRY_MAX_TRIALS:
@@ -885,16 +941,17 @@ async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
 
         opts["progress_hooks"] = [_progress_hook]
 
-        def _run() -> str | None:
+        def _run_with_opts(run_opts: dict, *, fallback_label: str = "") -> str | None:
             """Returns None on success, '__cancelled__' on cancel, or error string."""
-            log("▶️", f"[{job_short}] _run() entering yt_dlp.YoutubeDL")
+            label = f" {fallback_label}".rstrip()
+            log("▶️", f"[{job_short}] _run() entering yt_dlp.YoutubeDL{label}")
             try:
-                with yt_dlp.YoutubeDL(opts) as ydl:
+                with yt_dlp.YoutubeDL(run_opts) as ydl:
                     # Register SaveToDB AFTER FFmpeg so it sees the final .mp3/.mp4 path
                     saver = _SaveToDB(job, loop, mode, quality)
                     ydl.add_post_processor(saver, when="post_process")
 
-                    log("🔍", f"[{job_short}] Calling extract_info(download=True)")
+                    log("🔍", f"[{job_short}] Calling extract_info(download=True){label}")
                     info = ydl.extract_info(url, download=True)
 
                 if info is None:
@@ -919,6 +976,24 @@ async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
 
             log("✅", f"[{job_short}] _run() completed successfully")
             return None
+
+        def _run() -> str | None:
+            error = _run_with_opts(opts)
+            if (
+                error
+                and error != "__cancelled__"
+                and _COOKIES_FILE
+                and Path(_COOKIES_FILE).exists()
+                and _looks_like_cookie_backed_youtube_challenge(error)
+            ):
+                log("🔁", f"[{job_short}] Retrying challenged download without cookies")
+                fallback_opts = _build_public_fallback_opts(mode, quality, output_dir, subtitles)
+                fallback_opts["progress_hooks"] = [_progress_hook]
+                fallback_error = _run_with_opts(fallback_opts, fallback_label="(public fallback)")
+                if not fallback_error or fallback_error == "__cancelled__":
+                    return fallback_error
+                log("❌", f"[{job_short}] Public fallback failed: {fallback_error}")
+            return error
 
         db.queue_update(job.job_id, status="downloading")
         job.push({"phase": "fetching", "message": "Fetching metadata…"})
