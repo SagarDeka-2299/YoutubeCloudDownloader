@@ -661,7 +661,11 @@ def _build_opts(mode: str, quality: str, output_dir: Path, subtitles: list[str] 
     if mode == "audio":
         return {
             **base,
-            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
+            # Keep both downloadable assets, but do not require a specific
+            # codec/container pair. The stricter mp4+m4a chain regressed into
+            # "requested format is not available" on many otherwise playable
+            # YouTube items when challenge-degraded format lists are returned.
+            "format": "bestvideo+bestaudio/best",
             "merge_output_format": "mp4",
             "keepvideo": True,
             "postprocessors": [{"key": "FFmpegExtractAudio",
@@ -669,12 +673,11 @@ def _build_opts(mode: str, quality: str, output_dir: Path, subtitles: list[str] 
         }
 
     fmt = (
-        "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
+        "bestvideo+bestaudio/best"
         if quality == "best"
         else (
-            f"bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/"
             f"bestvideo[height<={quality}]+bestaudio/"
-            f"best[height<={quality}][ext=mp4]/best[height<={quality}]/best"
+            f"best[height<={quality}]/best"
         )
     )
     return {**base, "format": fmt, "merge_output_format": "mp4"}
