@@ -636,7 +636,7 @@ def _build_opts(mode: str, quality: str, output_dir: Path, subtitles: list[str] 
         "noprogress":   True,    # Suppress the text progress bar (we use hooks)
         "js_runtimes":  {"node": {}},  # yt-dlp requires a JS runtime to solve YouTube's n-challenge
         "extractor_args": {"youtube": {
-            "player_client": ["android", "web"],
+            "player_client": ["android_vr"],
         }},
         "http_headers": {
             "User-Agent": (
@@ -1590,7 +1590,7 @@ def _yt_dlp_info(url: str, *, extract_flat: str | None = None) -> dict:
         "ignoreerrors": True,
         "js_runtimes": {"node": {}},
         "extractor_args": {"youtube": {
-            "player_client": ["android", "web"],
+            "player_client": ["android_vr"],
         }},
         "http_headers": {
             "User-Agent": (
