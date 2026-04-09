@@ -51,6 +51,9 @@ CREATE TABLE IF NOT EXISTS queue (
     mode             TEXT NOT NULL,
     quality          TEXT NOT NULL,
     target_path      TEXT    DEFAULT '',
+    subtitles_json   TEXT    DEFAULT '[]',
+    inquiry_id       TEXT    DEFAULT '',
+    retry_attempt    INTEGER DEFAULT 1,
     status           TEXT    DEFAULT 'queued',
     title            TEXT,
     thumbnail        TEXT,
@@ -135,6 +138,13 @@ def init_db() -> None:
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     with _conn() as c:
         c.executescript(SCHEMA)
+        cols = {row[1] for row in c.execute("PRAGMA table_info(queue)").fetchall()}
+        if "subtitles_json" not in cols:
+            c.execute("ALTER TABLE queue ADD COLUMN subtitles_json TEXT DEFAULT '[]'")
+        if "inquiry_id" not in cols:
+            c.execute("ALTER TABLE queue ADD COLUMN inquiry_id TEXT DEFAULT ''")
+        if "retry_attempt" not in cols:
+            c.execute("ALTER TABLE queue ADD COLUMN retry_attempt INTEGER DEFAULT 1")
         c.commit()
 
 
@@ -723,13 +733,31 @@ def inquiry_delete(inquiry_id: str) -> None:
 
 # ── Queue ──────────────────────────────────────────────────────────────────────
 
-def queue_insert(job_id: str, url: str, mode: str, quality: str,
-                 target_path: str = "") -> None:
+def queue_insert(
+    job_id: str,
+    url: str,
+    mode: str,
+    quality: str,
+    target_path: str = "",
+    subtitles: list[str] | None = None,
+    inquiry_id: str | None = None,
+    retry_attempt: int = 1,
+) -> None:
     with _conn() as c:
         c.execute(
-            "INSERT OR IGNORE INTO queue (job_id, url, mode, quality, target_path) "
-            "VALUES (?,?,?,?,?)",
-            (job_id, url, mode, quality, target_path),
+            "INSERT OR IGNORE INTO queue "
+            "(job_id, url, mode, quality, target_path, subtitles_json, inquiry_id, retry_attempt) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (
+                job_id,
+                url,
+                mode,
+                quality,
+                target_path,
+                json.dumps(subtitles or []),
+                inquiry_id or "",
+                int(retry_attempt or 1),
+            ),
         )
         c.commit()
 
@@ -739,6 +767,7 @@ def queue_update(job_id: str, **kwargs: Any) -> None:
     _allowed = {
         "status", "title", "thumbnail",
         "downloaded_bytes", "total_bytes", "speed_bps", "eta_seconds", "error_msg",
+        "subtitles_json", "inquiry_id", "retry_attempt",
     }
     sets, vals = [], []
     for k, v in kwargs.items():
@@ -784,6 +813,14 @@ def queue_active_count() -> int:
             "SELECT COUNT(*) FROM queue WHERE status IN ('queued','downloading','converting','saving')"
         ).fetchone()
         return int(row[0] if row else 0)
+
+
+def queue_retry_wait_all() -> list[dict]:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM queue WHERE status='retry_wait' ORDER BY updated_at ASC, created_at ASC"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def queue_delete(job_id: str) -> None:

@@ -165,6 +165,16 @@ def _as_relative_path(path: Path, base_dir: Path) -> str:
     return str(rel).replace("\\", "/")
 
 
+def _parse_sqlite_timestamp(ts: Any) -> datetime:
+    raw = str(ts or "").strip()
+    if not raw:
+        return datetime.fromtimestamp(0)
+    try:
+        return datetime.fromisoformat(raw.replace(" ", "T"))
+    except ValueError:
+        return datetime.fromtimestamp(0)
+
+
 def _resolve_media_abspath(record: dict) -> Path:
     raw = str(record.get("file_path") or "").strip()
     mode = str(record.get("mode") or "audio")
@@ -621,8 +631,6 @@ def _build_opts(mode: str, quality: str, output_dir: Path, subtitles: list[str] 
 
 
 def _queue_retry_item(job: DownloadJob, error_msg: str) -> None:
-    if not job.inquiry_id:
-        return
     next_attempt = job.retry_attempt + 1
     if next_attempt > INQUIRY_RETRY_MAX_TRIALS:
         return
@@ -630,7 +638,8 @@ def _queue_retry_item(job: DownloadJob, error_msg: str) -> None:
     if not key:
         return
     with _inquiry_retry_lock:
-        batch = _inquiry_retry_batches.setdefault(job.inquiry_id, {})
+        batch_key = job.inquiry_id or "__queue__"
+        batch = _inquiry_retry_batches.setdefault(batch_key, {})
         batch[key] = {
             "job_id": job.job_id,
             "source_url": key,
@@ -642,6 +651,30 @@ def _queue_retry_item(job: DownloadJob, error_msg: str) -> None:
             "next_retry_at": time.time() + INQUIRY_RETRY_DELAY_SECONDS,
             "last_error": error_msg,
         }
+
+
+def _parse_retry_attempt(row: dict[str, Any]) -> int:
+    raw = int(row.get("retry_attempt") or 0)
+    if raw > 0:
+        return raw
+    msg = str(row.get("error_msg") or "")
+    m = re.search(r"\((\d+)\s*/\s*\d+\)", msg)
+    if m:
+        return min(int(m.group(1)) + 1, INQUIRY_RETRY_MAX_TRIALS)
+    return 2
+
+
+def _parse_queue_subtitles(row: dict[str, Any]) -> list[str]:
+    raw = row.get("subtitles_json")
+    if isinstance(raw, list):
+        return _normalize_subtitles(raw)
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(str(raw))
+    except Exception:
+        return []
+    return _normalize_subtitles(parsed if isinstance(parsed, list) else [])
 
 
 async def _process_inquiry_retries() -> None:
@@ -656,20 +689,40 @@ async def _process_inquiry_retries() -> None:
                 continue
 
             now = time.time()
-            due_items: list[dict[str, Any]] = []
+            due_by_job: dict[str, dict[str, Any]] = {}
             with _inquiry_retry_lock:
                 empty_inquiries: list[str] = []
                 for inquiry_id, batch in _inquiry_retry_batches.items():
                     for key, item in list(batch.items()):
                         if float(item.get("next_retry_at") or 0) <= now:
-                            due_items.append(item)
+                            due_by_job[str(item.get("job_id") or key)] = item
                             batch.pop(key, None)
                     if not batch:
                         empty_inquiries.append(inquiry_id)
                 for inquiry_id in empty_inquiries:
                     _inquiry_retry_batches.pop(inquiry_id, None)
 
-            for item in due_items:
+            retry_rows = await loop.run_in_executor(None, db.queue_retry_wait_all)
+            for row in retry_rows:
+                job_id = str(row.get("job_id") or "").strip()
+                if not job_id or job_id in due_by_job:
+                    continue
+                updated_at = str(row.get("updated_at") or row.get("created_at") or "").strip()
+                due_at = _parse_sqlite_timestamp(updated_at).timestamp() + INQUIRY_RETRY_DELAY_SECONDS
+                if due_at > now:
+                    continue
+                due_by_job[job_id] = {
+                    "job_id": job_id,
+                    "source_url": str(row.get("url") or "").strip(),
+                    "mode": str(row.get("mode") or "audio").strip() or "audio",
+                    "quality": str(row.get("quality") or "best").strip() or "best",
+                    "subtitles": _parse_queue_subtitles(row),
+                    "inquiry_id": str(row.get("inquiry_id") or "").strip() or None,
+                    "retry_attempt": _parse_retry_attempt(row),
+                    "next_retry_at": due_at,
+                }
+
+            for item in due_by_job.values():
                 try:
                     job_id, existing = await _enqueue_job(
                         loop=loop,
@@ -839,7 +892,7 @@ async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
 
     elif error:
         log("❌", f"[{job_short}] Job failed: {error}")
-        if job.inquiry_id and job.retry_attempt < INQUIRY_RETRY_MAX_TRIALS:
+        if job.retry_attempt < INQUIRY_RETRY_MAX_TRIALS:
             retry_msg = (
                 f"Retry queued for inquiry after {INQUIRY_RETRY_DELAY_SECONDS}s "
                 f"when queue is empty ({job.retry_attempt}/{INQUIRY_RETRY_MAX_TRIALS})"
@@ -847,7 +900,14 @@ async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
             log("🔁", f"[{job_short}] {retry_msg}")
             _queue_retry_item(job, error)
             job.push({"phase": "error", "message": retry_msg})
-            db.queue_update(job.job_id, status="retry_wait", error_msg=retry_msg)
+            db.queue_update(
+                job.job_id,
+                status="retry_wait",
+                inquiry_id=job.inquiry_id or "",
+                subtitles_json=json.dumps(list(job.subtitles or [])),
+                retry_attempt=job.retry_attempt + 1,
+                error_msg=retry_msg,
+            )
             _jobs.pop(job.job_id, None)
         else:
             job.push({"phase": "error", "message": error})
@@ -883,10 +943,13 @@ async def _startup() -> None:
     # Mark orphaned active rows as error (server was killed mid-download)
     rows, _ = db.queue_list(0, 9999)
     for row in rows:
-        if row.get("status") in ("downloading", "converting", "saving", "queued", "retry_wait"):
+        if row.get("status") in ("downloading", "converting", "saving", "queued"):
             log("⚠️", f"Orphaned queue row {row['job_id'][:8]} status={row['status']} → error")
             db.queue_update(row["job_id"], status="error",
                             error_msg="Server restarted — download was interrupted")
+    retry_rows = db.queue_retry_wait_all()
+    if retry_rows:
+        log("🔁", f"Resuming {len(retry_rows)} retry-wait queue rows from DB")
     _inquiry_retry_task = asyncio.create_task(_process_inquiry_retries())
     log("✅", "Startup complete")
 
@@ -1625,6 +1688,9 @@ async def _enqueue_job(
         await loop.run_in_executor(
             None, db.queue_update, job_id,
             status="queued",
+            inquiry_id=inquiry_id or "",
+            subtitles_json=json.dumps(normalized_subs),
+            retry_attempt=int(retry_attempt or 1),
             downloaded_bytes=0,
             total_bytes=0,
             speed_bps=0,
@@ -1633,7 +1699,8 @@ async def _enqueue_job(
         )
     else:
         await loop.run_in_executor(
-            None, db.queue_insert, job_id, url, normalized_mode, quality, ""
+            None, db.queue_insert, job_id, url, normalized_mode, quality, "",
+            normalized_subs, inquiry_id, int(retry_attempt or 1),
         )
     log("✅", f"Job {job_id[:8]} inserted into queue")
     asyncio.create_task(
