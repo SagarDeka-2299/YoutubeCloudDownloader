@@ -634,10 +634,6 @@ def _build_opts(mode: str, quality: str, output_dir: Path, subtitles: list[str] 
         "ignoreerrors": False,   # False so exceptions propagate correctly
         "outtmpl":      str(output_dir / "%(title)s.%(ext)s"),
         "noprogress":   True,    # Suppress the text progress bar (we use hooks)
-        # Use Android + web player clients — bypasses the "Sign in" bot check
-        "extractor_args": {"youtube": {
-            "player_client": ["android", "web"],
-        }},
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -1587,9 +1583,6 @@ def _yt_dlp_info(url: str, *, extract_flat: str | None = None) -> dict:
         "quiet": True,
         "no_warnings": True,
         "ignoreerrors": True,
-        "extractor_args": {"youtube": {
-            "player_client": ["android", "web"],
-        }},
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

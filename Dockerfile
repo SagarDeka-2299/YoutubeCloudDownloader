@@ -5,21 +5,15 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
-# Install uv directly (avoids dependency on ghcr.io image availability)
+# Install uv
 RUN pip install --no-cache-dir uv
 
 WORKDIR /app
 
-COPY pyproject.toml .
+COPY pyproject.toml uv.lock ./
 
-RUN uv pip install --system --no-cache \
-    fastapi \
-    "uvicorn[standard]" \
-    "yt-dlp>=2025.1.1" \
-    python-multipart \
-    aiofiles && \
-    # Always upgrade yt-dlp to absolute latest after base install
-    pip install --upgrade --no-cache-dir yt-dlp
+# Install exact versions from lockfile into the system Python
+RUN UV_SYSTEM_PYTHON=1 uv sync --frozen --no-cache
 
 # Application code
 COPY main.py .
