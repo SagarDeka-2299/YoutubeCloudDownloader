@@ -634,9 +634,10 @@ def _build_opts(mode: str, quality: str, output_dir: Path, subtitles: list[str] 
         "ignoreerrors": False,   # False so exceptions propagate correctly
         "outtmpl":      str(output_dir / "%(title)s.%(ext)s"),
         "noprogress":   True,    # Suppress the text progress bar (we use hooks)
-        "js_runtimes":  {"node": {}},  # yt-dlp requires a JS runtime to solve YouTube's n-challenge
+        "js_runtimes":       {"node": {}},
+        "remote_components": ["ejs:github"],  # download challenge solver script from yt-dlp/ejs
         "extractor_args": {"youtube": {
-            "player_client": ["android_vr"],
+            "player_client": ["web_safari"],  # supports cookies; needs ejs for sig/n-challenge
         }},
         "http_headers": {
             "User-Agent": (
@@ -710,8 +711,9 @@ def _build_public_fallback_opts(
         "no_warnings": False,
         "ignoreerrors": False,
         "outtmpl": str(output_dir / "%(title)s.%(ext)s"),
-        "noprogress": True,
-        "js_runtimes": {"node": {}},
+        "noprogress":        True,
+        "js_runtimes":       {"node": {}},
+        "remote_components": ["ejs:github"],
     }
     if _FFMPEG_LOCATION:
         base["ffmpeg_location"] = _FFMPEG_LOCATION
@@ -1588,9 +1590,10 @@ def _yt_dlp_info(url: str, *, extract_flat: str | None = None) -> dict:
         "quiet": True,
         "no_warnings": True,
         "ignoreerrors": True,
-        "js_runtimes": {"node": {}},
+        "js_runtimes":       {"node": {}},
+        "remote_components": ["ejs:github"],
         "extractor_args": {"youtube": {
-            "player_client": ["android_vr"],
+            "player_client": ["web_safari"],
         }},
         "http_headers": {
             "User-Agent": (
