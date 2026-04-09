@@ -634,7 +634,7 @@ def _build_opts(mode: str, quality: str, output_dir: Path, subtitles: list[str] 
         "ignoreerrors": False,   # False so exceptions propagate correctly
         "outtmpl":      str(output_dir / "%(title)s.%(ext)s"),
         "noprogress":   True,    # Suppress the text progress bar (we use hooks)
-        "js_runtimes":  "node",  # yt-dlp requires a JS runtime to solve YouTube's n-challenge
+        "js_runtimes":  {"node": {}},  # yt-dlp requires a JS runtime to solve YouTube's n-challenge
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -708,7 +708,7 @@ def _build_public_fallback_opts(
         "ignoreerrors": False,
         "outtmpl": str(output_dir / "%(title)s.%(ext)s"),
         "noprogress": True,
-        "js_runtimes": "node",
+        "js_runtimes": {"node": {}},
     }
     if _FFMPEG_LOCATION:
         base["ffmpeg_location"] = _FFMPEG_LOCATION
@@ -1585,7 +1585,7 @@ def _yt_dlp_info(url: str, *, extract_flat: str | None = None) -> dict:
         "quiet": True,
         "no_warnings": True,
         "ignoreerrors": True,
-        "js_runtimes": "node",
+        "js_runtimes": {"node": {}},
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
