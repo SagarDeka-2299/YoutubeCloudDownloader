@@ -655,7 +655,7 @@ def _queue_retry_item(job: DownloadJob, error_msg: str) -> None:
 
 def _parse_retry_attempt(row: dict[str, Any]) -> int:
     raw = int(row.get("retry_attempt") or 0)
-    if raw > 0:
+    if raw > 1:
         return raw
     msg = str(row.get("error_msg") or "")
     m = re.search(r"\((\d+)\s*/\s*\d+\)", msg)
@@ -1685,8 +1685,8 @@ async def _enqueue_job(
     _jobs[job_id] = job
 
     if existing_job_id:
-        await loop.run_in_executor(
-            None, db.queue_update, job_id,
+        await loop.run_in_executor(None, lambda: db.queue_update(
+            job_id,
             status="queued",
             inquiry_id=inquiry_id or "",
             subtitles_json=json.dumps(normalized_subs),
@@ -1696,7 +1696,7 @@ async def _enqueue_job(
             speed_bps=0,
             eta_seconds=0,
             error_msg="",
-        )
+        ))
     else:
         await loop.run_in_executor(
             None, db.queue_insert, job_id, url, normalized_mode, quality, "",
