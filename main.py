@@ -626,6 +626,22 @@ class _SaveToDB(yt_dlp.postprocessor.PostProcessor):
 
 
 # ── yt-dlp opts ────────────────────────────────────────────────────────────────
+# WORKING CONFIG (verified 2026-04-09) — do not change without testing:
+#
+#   player_client : web_safari
+#     • Supports cookies (android/android_vr are skipped when cookies present)
+#     • android now requires a GVS PO Token for HTTPS/DASH — unusable on cloud IPs
+#     • web_safari works with cookies + ejs challenge solver
+#
+#   js_runtimes   : {"node": {}}
+#     • nodejs installed in Docker image (apt-get install nodejs)
+#     • Python API expects a dict {runtime: {config}}, NOT a string or list
+#
+#   remote_components : ["ejs:github"]
+#     • yt-dlp needs to download a challenge solver script from yt-dlp/ejs on GitHub
+#     • Without this, signature and n-challenge solving always fail → only images returned
+#     • Blocked by default for security; must be explicitly opted in
+#
 def _build_opts(mode: str, quality: str, output_dir: Path, subtitles: list[str] = None) -> dict:
     base: dict = {
         # Do NOT use quiet=True — we need to see errors in logs
@@ -1613,6 +1629,21 @@ def _yt_dlp_info(url: str, *, extract_flat: str | None = None) -> dict:
         return ydl.extract_info(url, download=False) or {}
 
 
+def _best_thumbnail(info: dict) -> str | None:
+    """Return the best thumbnail URL from an info dict, constructing one from the video ID if needed."""
+    thumb = info.get("thumbnail")
+    if not thumb:
+        thumbnails = info.get("thumbnails") or []
+        if thumbnails:
+            best = max(thumbnails, key=lambda t: (t.get("width") or 0) * (t.get("height") or 0))
+            thumb = best.get("url")
+    if not thumb:
+        vid = info.get("id") or info.get("video_id")
+        if vid:
+            thumb = f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg"
+    return thumb or None
+
+
 def _sanitize_preview_entry(info: dict | None, *, fallback_index: int = 0) -> dict | None:
     if not info:
         return None
@@ -1631,7 +1662,7 @@ def _sanitize_preview_entry(info: dict | None, *, fallback_index: int = 0) -> di
     return {
         "url": url,
         "title": title,
-        "thumbnail": info.get("thumbnail"),
+        "thumbnail": _best_thumbnail(info),
         "uploader": info.get("uploader") or info.get("channel"),
         "duration": info.get("duration"),
         "view_count": info.get("view_count"),
@@ -1657,7 +1688,7 @@ def _fallback_preview_row_from_entry(entry: dict | None, *, fallback_index: int)
     return {
         "url": url,
         "title": title,
-        "thumbnail": entry.get("thumbnail"),
+        "thumbnail": _best_thumbnail(entry),
         "uploader": entry.get("uploader") or entry.get("channel"),
         "duration": entry.get("duration"),
         "view_count": entry.get("view_count"),
