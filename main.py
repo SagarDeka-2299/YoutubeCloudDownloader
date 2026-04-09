@@ -1045,6 +1045,7 @@ async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
                 f"when queue is empty ({job.retry_attempt}/{INQUIRY_RETRY_MAX_TRIALS})"
             )
             log("🔁", f"[{job_short}] {retry_msg}")
+            next_retry_at = time.time() + INQUIRY_RETRY_DELAY_SECONDS
             _queue_retry_item(job, error)
             job.push({"phase": "error", "message": retry_msg})
             db.queue_update(
@@ -1054,6 +1055,7 @@ async def _run_job(job: DownloadJob, url: str, mode: str, quality: str,
                 subtitles_json=json.dumps(list(job.subtitles or [])),
                 retry_attempt=job.retry_attempt + 1,
                 error_msg=retry_msg,
+                next_retry_at=next_retry_at,
             )
             _jobs.pop(job.job_id, None)
         else:
@@ -2006,6 +2008,37 @@ async def cancel_job(job_id: str) -> dict:
         await loop.run_in_executor(None, db.queue_delete, job_id)
         log("🗑️", f"Job {job_id[:8]} not in memory — DB row deleted directly")
     return {"cancelled": job_id}
+
+
+@app.post("/api/jobs/{job_id}/retry")
+async def force_retry_job(job_id: str) -> dict:
+    """Immediately retry a job that is in retry_wait or error state."""
+    loop = asyncio.get_event_loop()
+    row = await loop.run_in_executor(None, db.queue_get, job_id)
+    if not row or row.get("status") not in ("retry_wait", "error"):
+        raise HTTPException(status_code=404, detail="Job not found or not retriable")
+
+    # Remove from in-memory retry batches so it doesn't double-fire
+    with _inquiry_retry_lock:
+        for batch in _inquiry_retry_batches.values():
+            for k, v in list(batch.items()):
+                if v.get("job_id") == job_id:
+                    del batch[k]
+                    break
+
+    retry_attempt = int(row.get("retry_attempt") or 1) if row.get("status") == "retry_wait" else 1
+    await _enqueue_job(
+        loop=loop,
+        url=str(row["url"]),
+        mode=str(row.get("mode") or "audio"),
+        quality=str(row.get("quality") or "best"),
+        subtitles=_parse_queue_subtitles(row),
+        inquiry_id=str(row.get("inquiry_id") or "") or None,
+        retry_attempt=retry_attempt,
+        existing_job_id=job_id,
+    )
+    log("🔁", f"Manual retry triggered for job {job_id[:8]}")
+    return {"retrying": job_id}
 
 
 @app.delete("/api/jobs")

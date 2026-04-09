@@ -1272,6 +1272,7 @@
       <div style="display:flex; align-items:center; gap:0.5rem;">
         <span class="card-title">📚 Library</span>
         <span id="library-total-count" style="font-size:.76rem;color:var(--m)"></span>
+        <button class="btn-ghost" onclick="loadMedia(true)" title="Refresh library" style="padding:0.15rem 0.4rem; font-size:0.85rem; line-height:1;">↻</button>
       </div>
       <div class="lib-tabs">
         <button class="lt on" id="lt-audio" onclick="switchLib('audio')">🎵 Audio</button>
@@ -2615,11 +2616,16 @@
 
       let actions = '';
       if (job.status === 'error') {
-        actions = `<button class="btn-xs btn-red" onclick="dismissJob('${job.job_id}')">✕ Dismiss</button>
+        actions = `<button class="btn-xs btn-p" onclick="forceRetryJob('${job.job_id}')">↺ Retry</button>
+               <button class="btn-xs btn-red" onclick="dismissJob('${job.job_id}')">✕ Dismiss</button>
                <span class="err-msg" title="${esc(job.error_msg || '')}">${esc((job.error_msg || 'Unknown error').slice(0, 80))}</span>`;
       } else if (job.status === 'retry_wait') {
-        actions = `<button class="btn-xs btn-red" onclick="cancelJob('${job.job_id}')">✕ Cancel Retry</button>
-               <span class="err-msg" title="${esc(job.error_msg || '')}">${esc((job.error_msg || 'Retry pending').slice(0, 80))}</span>`;
+        const countdown = job.next_retry_at
+          ? `<span class="err-msg" id="retry-cd-${job.job_id}">Retry in …</span>`
+          : `<span class="err-msg">${esc((job.error_msg || 'Retry pending').slice(0, 80))}</span>`;
+        actions = `<button class="btn-xs btn-p" onclick="forceRetryJob('${job.job_id}')">↺ Retry Now</button>
+               <button class="btn-xs btn-red" onclick="cancelJob('${job.job_id}')">✕ Cancel</button>
+               ${countdown}`;
       } else if (job.status !== 'done' && job.status !== 'cancelled') {
         actions = `<button class="btn-xs btn-red" onclick="cancelJob('${job.job_id}')">✕ Cancel</button>`;
       }
@@ -2668,6 +2674,28 @@
       queueJobs.delete(jid);
       renderQueueMeta();
     }
+
+    async function forceRetryJob(jid) {
+      try {
+        const res = await fetch('/api/jobs/' + jid + '/retry', { method: 'POST' });
+        if (!res.ok) throw new Error((await res.json().catch(()=>({}))).detail || 'Failed');
+        toast('Retrying…', 'ok');
+      } catch(e) {
+        toast('Retry failed: ' + e.message, 'er');
+      }
+    }
+
+    // Tick retry countdowns every second
+    setInterval(() => {
+      const now = Date.now() / 1000;
+      queueJobs.forEach((job, jid) => {
+        if (job.status !== 'retry_wait' || !job.next_retry_at) return;
+        const el = document.getElementById('retry-cd-' + jid);
+        if (!el) return;
+        const secs = Math.max(0, Math.ceil(job.next_retry_at - now));
+        el.textContent = secs > 0 ? `Retry in ${secs}s` : 'Retrying…';
+      });
+    }, 1000);
 
     // ── Zip Queue WebSocket & Rendering ─────────────────────────────────────────
     function connectZipWs() {

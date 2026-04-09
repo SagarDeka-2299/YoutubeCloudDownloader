@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS queue (
     speed_bps        REAL    DEFAULT 0,
     eta_seconds      INTEGER DEFAULT 0,
     error_msg        TEXT,
+    next_retry_at    REAL    DEFAULT NULL,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -145,6 +146,8 @@ def init_db() -> None:
             c.execute("ALTER TABLE queue ADD COLUMN inquiry_id TEXT DEFAULT ''")
         if "retry_attempt" not in cols:
             c.execute("ALTER TABLE queue ADD COLUMN retry_attempt INTEGER DEFAULT 1")
+        if "next_retry_at" not in cols:
+            c.execute("ALTER TABLE queue ADD COLUMN next_retry_at REAL DEFAULT NULL")
         c.commit()
 
 
@@ -767,7 +770,7 @@ def queue_update(job_id: str, **kwargs: Any) -> None:
     _allowed = {
         "status", "title", "thumbnail",
         "downloaded_bytes", "total_bytes", "speed_bps", "eta_seconds", "error_msg",
-        "subtitles_json", "inquiry_id", "retry_attempt",
+        "subtitles_json", "inquiry_id", "retry_attempt", "next_retry_at",
     }
     sets, vals = [], []
     for k, v in kwargs.items():
