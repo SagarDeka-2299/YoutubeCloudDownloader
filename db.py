@@ -829,6 +829,12 @@ def queue_delete(job_id: str) -> None:
         c.commit()
 
 
+def queue_clear() -> None:
+    with _conn() as c:
+        c.execute("DELETE FROM queue")
+        c.commit()
+
+
 def queue_cleanup_terminal() -> None:
     with _conn() as c:
         c.execute("DELETE FROM queue WHERE status IN ('done','cancelled')")

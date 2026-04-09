@@ -1248,7 +1248,10 @@
   <div class="card" id="queue-card">
     <div class="card-hdr">
       <span class="card-title">⚡ Download Queue</span>
-      <span id="queue-count" style="font-size:.76rem;color:var(--m)"></span>
+      <div style="display:flex;align-items:center;gap:.5rem;">
+        <span id="queue-count" style="font-size:.76rem;color:var(--m)"></span>
+        <button class="btn-xs btn-red" id="cancel-all-btn" onclick="cancelAllJobs()" style="display:none">✕ Cancel All</button>
+      </div>
     </div>
     <div class="queue-list" id="queue-list">
       <div class="empty">
@@ -2371,13 +2374,6 @@
           if (data.queued) toast(`Queued ${data.queued} jobs`, 'ok');
           else toast('No new jobs queued', 'in');
           if (data.skipped_duplicates) toast(`Skipped ${data.skipped_duplicates} duplicates`, 'in');
-          if (currentInquiryId && currentInquiryStatus === 'done') {
-            const doneInquiryId = currentInquiryId;
-            currentInquiryId = '';
-            currentInquiryStatus = '';
-            syncDownloadButton();
-            deleteInquiry(doneInquiryId, { clearSelection: false });
-          }
           sendQueuePage();
         } catch (e) {
           toast('Error: ' + e.message, 'er');
@@ -2497,13 +2493,16 @@
 
     function renderQueueMeta() {
       const list = document.getElementById('queue-list');
+      const cancelAllBtn = document.getElementById('cancel-all-btn');
       if (queueJobs.size === 0) {
         if (!list.querySelector('.empty')) {
           list.innerHTML = '<div class="empty"><div class="empty-icon">🚀</div><div>No active downloads</div></div>';
         }
+        cancelAllBtn.style.display = 'none';
       } else {
         const empty = list.querySelector('.empty');
         if (empty) empty.remove();
+        cancelAllBtn.style.display = 'inline-flex';
       }
 
       const totalPages = Math.max(1, Math.ceil(queueTotal / QUEUE_PG));
@@ -2648,6 +2647,17 @@
         toast('Cancel failed: ' + e.message, 'er');
       }
     }
+    async function cancelAllJobs() {
+      try {
+        await fetch('/api/jobs', { method: 'DELETE' });
+        queueJobs.clear();
+        document.getElementById('queue-list').innerHTML = '';
+        renderQueueMeta();
+        toast('Cancelled all downloads', 'in');
+      } catch (e) {
+        toast('Cancel all failed: ' + e.message, 'er');
+      }
+    }
     async function dismissJob(jid) {
       // DELETE call removes the row from DB (server handles error-state rows)
       try {
@@ -2777,6 +2787,8 @@
         }
         if (currentInquiryId === id) {
           currentInquiryId = '';
+          currentInquiryStatus = '';
+          syncDownloadButton();
         }
       });
 
@@ -2857,6 +2869,7 @@
     function renderInquiryCardContent(el, inquiry) {
       const total = Number(inquiry.total_count || 0);
       const processed = Number(inquiry.processed_count || 0);
+      const downloaded = Number(inquiry.downloaded_count || 0);
       const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
       const active = currentInquiryId === inquiry.inquiry_id;
       let badge = '<span class="phase-pill ph-queued">QUEUED</span>';
@@ -2884,7 +2897,7 @@
           <div class="bar-wrap"><div class="bar-fill" style="width:${barWidth}"></div></div>
           <div class="job-stats">
             <span class="stat-bytes">${esc(detail)}</span>
-            ${total ? `<span class="stat-track">${processed}/${total}</span>` : ''}
+            ${total ? `<span class="stat-track">${downloaded}/${total} downloaded</span>` : ''}
           </div>
           <div class="job-actions">${actions}</div>
       </div>`;

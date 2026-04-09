@@ -294,6 +294,56 @@ def _find_pending_duplicate(url: str, *, exclude_job_id: str | None = None) -> d
     return None
 
 
+def _inquiry_download_progress(row: dict[str, Any] | None) -> tuple[int, int]:
+    if not row:
+        return 0, 0
+    cached = db.get_preview_items(str(row.get("source_url") or "").strip())
+    total = int(row.get("total_count") or 0)
+    if not cached:
+        return 0, total
+
+    seen_ids: set[str] = set()
+    downloaded = 0
+    for item in cached:
+        video_id = extract_youtube_id(str(item.get("url") or "").strip())
+        if not video_id or video_id in seen_ids:
+            continue
+        seen_ids.add(video_id)
+        existing = db.get_media_by_youtube_id(video_id)
+        if _record_has_media_on_disk(existing):
+            downloaded += 1
+    total = max(total, len(seen_ids))
+    return downloaded, total
+
+
+def _finalize_inquiry_row(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    downloaded_count, total_count = _inquiry_download_progress(row)
+    finalized = dict(row)
+    finalized["downloaded_count"] = downloaded_count
+    finalized["total_count"] = max(int(finalized.get("total_count") or 0), total_count)
+    if (
+        str(finalized.get("status") or "") == "done"
+        and finalized["total_count"] > 0
+        and downloaded_count >= finalized["total_count"]
+    ):
+        db.inquiry_delete(str(finalized.get("inquiry_id") or ""))
+        return None
+    return finalized
+
+
+def _list_inquiries_with_progress(page: int, limit: int) -> tuple[list[dict[str, Any]], int]:
+    rows, _ = db.inquiry_list(0, 10000)
+    visible: list[dict[str, Any]] = []
+    for row in rows:
+        finalized = _finalize_inquiry_row(row)
+        if finalized:
+            visible.append(finalized)
+    offset = max(0, page) * max(1, limit)
+    return visible[offset:offset + max(1, limit)], len(visible)
+
+
 def _cleanup_duplicate_download_outputs(existing: dict, primary_path: Path, downloads: list[dict]) -> None:
     keep: set[str] = set()
     for desired_mode in ("audio", "video"):
@@ -1794,6 +1844,7 @@ async def create_inquiry(req: InquiryRequest) -> dict:
     loop = asyncio.get_event_loop()
     source_url = _canonical_source_url(req.url)
     existing = await loop.run_in_executor(None, db.inquiry_get_by_source_url, source_url)
+    existing = await loop.run_in_executor(None, _finalize_inquiry_row, existing)
     if existing and existing.get("status") in {"queued", "building", "done"}:
         return existing
 
@@ -1808,6 +1859,7 @@ async def create_inquiry(req: InquiryRequest) -> dict:
 async def get_inquiry(inquiry_id: str) -> dict:
     loop = asyncio.get_event_loop()
     row = await loop.run_in_executor(None, db.inquiry_get, inquiry_id)
+    row = await loop.run_in_executor(None, _finalize_inquiry_row, row)
     if not row:
         raise HTTPException(status_code=404, detail="Inquiry not found")
     return row
@@ -1840,6 +1892,18 @@ async def cancel_job(job_id: str) -> dict:
         await loop.run_in_executor(None, db.queue_delete, job_id)
         log("🗑️", f"Job {job_id[:8]} not in memory — DB row deleted directly")
     return {"cancelled": job_id}
+
+
+@app.delete("/api/jobs")
+async def cancel_all_jobs() -> dict:
+    loop = asyncio.get_event_loop()
+    for job in list(_jobs.values()):
+        job.cancel_event.set()
+        job.push({"phase": "cancelled"})
+    with _inquiry_retry_lock:
+        _inquiry_retry_batches.clear()
+    await loop.run_in_executor(None, db.queue_clear)
+    return {"cancelled": "all"}
 
 @app.get("/api/queue")
 async def get_queue(page: int = 0, limit: int = 10) -> dict:
@@ -1981,7 +2045,7 @@ async def ws_inquiries(ws: WebSocket) -> None:
     loop = asyncio.get_event_loop()
     try:
         while True:
-            rows, total = await loop.run_in_executor(None, db.inquiry_list, page, limit)
+            rows, total = await loop.run_in_executor(None, _list_inquiries_with_progress, page, limit)
             current = {r["inquiry_id"]: r for r in rows}
             changed = [r for jid, r in current.items() if last_snapshot.get(jid) != r]
             removed = [jid for jid in last_snapshot if jid not in current]
@@ -2072,7 +2136,7 @@ async def inquiry_preview(
     req_limit = max(1, min(int(limit), 50))
 
     def _build() -> dict:
-        inquiry = db.inquiry_get(inquiry_id)
+        inquiry = _finalize_inquiry_row(db.inquiry_get(inquiry_id))
         if not inquiry:
             return {"missing": True}
         if inquiry.get("status") == "building" or inquiry.get("status") == "queued":
